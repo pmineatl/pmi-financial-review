@@ -1,0 +1,929 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>HOA Financial Review — PMI Northeast Atlanta</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<style>
+:root {
+  --bg: #f5f2ed; --surface: #ffffff; --surface2: #f0ece4;
+  --border: #ddd8ce; --border-dark: #c5bfb3; --accent: #1a3a2a;
+  --accent-gold: #8a6a20; --text: #1a1a18; --text-muted: #6b6560; --text-dim: #a09b95;
+  --green: #1a5c30; --green-bg: #e8f5ed; --red: #c8391a; --red-bg: #fdf0ec;
+  --yellow: #7a5a10; --yellow-bg: #fdf6e3; --radius: 8px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans', sans-serif; font-weight: 300; min-height: 100vh; }
+.top-stripe { background: var(--accent); height: 4px; }
+.container { max-width: 1000px; margin: 0 auto; padding: 40px 28px 80px; }
+.header { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 36px; padding-bottom: 24px; border-bottom: 2px solid var(--accent); }
+.logo-eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent-gold); margin-bottom: 6px; }
+.logo-title { font-family: 'Playfair Display', serif; font-size: 26px; color: var(--accent); }
+.header-date { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--text-muted); }
+.apikey-bar { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 18px; margin-bottom: 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.apikey-label { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.apikey-bar input[type="password"] { flex: 1; min-width: 200px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 7px 12px; outline: none; }
+.apikey-bar input[type="password"]:focus { border-color: var(--accent); }
+.apikey-save { padding: 7px 16px; background: var(--accent); color: #fff; border: none; border-radius: 6px; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; font-weight: 600; cursor: pointer; }
+.apikey-save:hover { background: #264d38; }
+.apikey-status { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--green); }
+.section-label { font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 10px; }
+.drop-zone { border: 2px dashed var(--border-dark); border-radius: var(--radius); background: var(--surface); padding: 40px 32px; text-align: center; cursor: pointer; transition: border-color 0.2s, background 0.2s; position: relative; margin-bottom: 16px; }
+.drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); background: #f0f5f2; }
+.drop-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+.drop-title { font-family: 'Playfair Display', serif; font-size: 17px; color: var(--accent); margin-bottom: 6px; }
+.drop-sub { font-size: 12px; color: var(--text-muted); }
+.file-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+.file-item { display: flex; align-items: center; gap: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; }
+.file-item.done { border-color: var(--green); background: var(--green-bg); }
+.file-item.error { border-color: var(--red); background: var(--red-bg); }
+.file-item.processing { border-color: var(--accent-gold); background: var(--yellow-bg); }
+.file-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border-dark); flex-shrink: 0; }
+.file-item.done .file-dot { background: var(--green); }
+.file-item.error .file-dot { background: var(--red); }
+.file-item.processing .file-dot { background: var(--accent-gold); animation: pulse 1s infinite; }
+@keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.4} }
+.file-name { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--text); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-status { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+.file-item.done .file-status { color: var(--green); }
+.file-item.error .file-status { color: var(--red); }
+.file-item.processing .file-status { color: var(--accent-gold); }
+.file-remove { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 0 4px; }
+.file-remove:hover { color: var(--red); }
+.controls-row { display: flex; gap: 12px; align-items: flex-end; margin-bottom: 24px; flex-wrap: wrap; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--text-muted); }
+.field input[type="month"], .field input[type="text"] { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-family: 'IBM Plex Sans', sans-serif; font-size: 14px; padding: 10px 13px; outline: none; }
+.field input:focus { border-color: var(--accent); }
+.run-btn { padding: 11px 28px; background: var(--accent); color: #fff; border: none; border-radius: var(--radius); font-family: 'IBM Plex Sans', sans-serif; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s; align-self: flex-end; }
+.run-btn:hover:not(:disabled) { background: #264d38; }
+.run-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.progress-bar-wrap { background: var(--border); border-radius: 4px; height: 6px; margin-bottom: 8px; overflow: hidden; }
+.progress-bar-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width 0.4s ease; }
+.progress-label { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--text-muted); margin-bottom: 20px; }
+.results { display: none; }
+.results.visible { display: block; }
+.results-header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 16px; }
+.results-title { font-family: 'Playfair Display', serif; font-size: 20px; color: var(--accent); }
+.stats-bar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+.stat-pill { display: flex; align-items: center; gap: 7px; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 6px 14px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+.stat-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.stat-dot.red { background: var(--red); }
+.stat-dot.yellow { background: #c8960a; }
+.stat-dot.green { background: var(--green); }
+.table-wrapper { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); margin-bottom: 20px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+thead tr { background: var(--accent); color: #fff; }
+thead th { font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; padding: 11px 12px; text-align: left; font-weight: 500; white-space: nowrap; }
+tbody tr { border-bottom: 1px solid var(--border); }
+tbody tr:last-child { border-bottom: none; }
+tbody tr:hover { background: var(--surface2); }
+tbody td { padding: 10px 12px; vertical-align: top; line-height: 1.5; }
+tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accent); font-size: 13px; }
+.cell-ok { color: var(--green); font-family: 'IBM Plex Mono', monospace; font-size: 10px; font-weight: 500; }
+.cell-issue { color: var(--red); font-size: 11px; }
+.cell-warn { color: var(--yellow); font-size: 11px; }
+.cell-dim { color: var(--text-muted); font-size: 11px; font-style: italic; }
+.cell-warn-line { display: block; padding: 1px 0; border-bottom: 1px dotted rgba(122,90,16,0.2); }
+.cell-warn-line:last-child { border-bottom: none; }
+.row-critical td:first-child { border-left: 3px solid var(--red); padding-left: 9px; }
+.row-warning td:first-child { border-left: 3px solid #c8960a; padding-left: 9px; }
+.row-ok td:first-child { border-left: 3px solid var(--green); padding-left: 9px; }
+.action-bar { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn-sec { padding: 10px 18px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); font-family: 'IBM Plex Sans', sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; transition: border-color 0.2s; }
+.btn-sec:hover { border-color: var(--accent); background: #eef3f0; }
+.btn-excel { background: #1a5c30; color: #fff; border-color: #1a5c30; }
+.btn-excel:hover { background: #154d28 !important; border-color: #154d28 !important; color: #fff; }
+.error-box { display: none; background: var(--red-bg); border: 1px solid rgba(200,57,26,0.3); border-radius: var(--radius); padding: 12px 16px; font-size: 13px; color: var(--red); margin-bottom: 16px; }
+.error-box.visible { display: block; }
+@media print {
+  .apikey-bar,.drop-zone,.file-list,.controls-row,.action-bar,.top-stripe { display: none !important; }
+  .results { display: block !important; }
+  body { background: white; }
+}
+</style>
+</head>
+<body>
+<div class="top-stripe"></div>
+<div class="container">
+  <div class="header">
+    <div>
+      <div class="logo-eyebrow">PMI Northeast Atlanta</div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v26</span></div>
+    </div>
+    <div class="header-date" id="headerDate"></div>
+  </div>
+
+  <div class="apikey-bar">
+    <div class="apikey-label">🔑 Anthropic API Key</div>
+    <input type="password" id="apiKeyInput" placeholder="sk-ant-..." autocomplete="off"/>
+    <button class="apikey-save" id="apiKeySave">Save Key</button>
+    <span class="apikey-status" id="apikeyStatus"></span>
+  </div>
+
+  <div class="section-label">Upload Financial Report PDFs</div>
+  <div class="drop-zone" id="dropZone">
+    <input type="file" id="fileInput" accept=".pdf" multiple/>
+    <div class="drop-title">Drop PDF files here or click to browse</div>
+    <div class="drop-sub">Upload one or multiple HOA financial report PDFs — each community analyzed separately</div>
+  </div>
+
+  <div class="file-list" id="fileList"></div>
+
+  <div class="controls-row">
+    <div class="field">
+      <label>Report Month</label>
+      <input type="month" id="reportMonth"/>
+    </div>
+    <div class="field">
+      <label>Reviewer Name</label>
+      <input type="text" id="reviewerName" placeholder="e.g. Sarah M." style="width:160px"/>
+    </div>
+    <button class="run-btn" id="runBtn" disabled>Analyze Reports →</button>
+  </div>
+
+  <div class="error-box" id="errorBox"></div>
+
+  <div id="progressArea" style="display:none">
+    <div class="progress-bar-wrap"><div class="progress-bar-fill" id="progressFill" style="width:0%"></div></div>
+    <div class="progress-label" id="progressLabel">Preparing...</div>
+  </div>
+
+  <div class="results" id="results">
+    <div class="results-header">
+      <div class="results-title">Portfolio Review Results</div>
+      <div class="header-date" id="resultsMeta"></div>
+    </div>
+    <div class="stats-bar" id="statsBar"></div>
+    <div class="table-wrapper">
+      <table id="reviewTable">
+        <thead>
+          <tr>
+            <th>Community</th>
+            <th>BS — Operating</th>
+            <th>BS — Reserve</th>
+            <th>Pre-Paid Recon</th>
+            <th>Income Statement Review</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody"></tbody>
+      </table>
+    </div>
+    <div class="action-bar">
+      <button class="btn-sec btn-excel" id="excelBtn">⬇ Export to Excel</button>
+      <button class="btn-sec" id="printBtn">🖨 Print / Save PDF</button>
+      <button class="btn-sec" id="resetBtn">↩ New Review</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const now = new Date();
+document.getElementById('headerDate').textContent = now.toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
+const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+document.getElementById('reportMonth').value = `${prevMonth.getFullYear()}-${String(prevMonth.getMonth()+1).padStart(2,'0')}`;
+
+// API Key
+const apiKeyInput = document.getElementById('apiKeyInput');
+const apikeyStatus = document.getElementById('apikeyStatus');
+const savedKey = localStorage.getItem('pmi_anthropic_key');
+if (savedKey) { apiKeyInput.value = savedKey; apikeyStatus.textContent = '✓ Key saved'; }
+document.getElementById('apiKeySave').addEventListener('click', () => {
+  const val = apiKeyInput.value.trim();
+  if (!val.startsWith('sk-')) { apikeyStatus.style.color='var(--red)'; apikeyStatus.textContent='Invalid key format'; return; }
+  localStorage.setItem('pmi_anthropic_key', val);
+  apikeyStatus.style.color='var(--green)'; apikeyStatus.textContent='✓ Key saved';
+});
+function getApiKey() { return apiKeyInput.value.trim() || localStorage.getItem('pmi_anthropic_key') || ''; }
+
+// Files
+let files = [];
+const fileInput = document.getElementById('fileInput');
+const dropZone = document.getElementById('dropZone');
+const fileListEl = document.getElementById('fileList');
+const runBtn = document.getElementById('runBtn');
+
+function addFiles(newFiles) {
+  for (const f of newFiles) {
+    if (f.type !== 'application/pdf') continue;
+    if (files.find(x => x.file.name === f.name && x.file.size === f.size)) continue;
+    files.push({ file: f, status: 'pending', result: null });
+  }
+  renderFileList();
+  runBtn.disabled = files.length === 0;
+}
+
+function renderFileList() {
+  fileListEl.innerHTML = '';
+  files.forEach((item, i) => {
+    const div = document.createElement('div');
+    
+    div.className = `file-item ${item.status}`;
+    const statusText = {pending:'Pending', processing:'Analyzing...', done:'✓ Complete', error:'✗ Failed'}[item.status] || '';
+    const sizeKB = Math.round(item.file.size / 1024);
+    const warnColor = sizeKB > 700 ? 'var(--accent-gold)' : 'var(--text-dim)';
+    const warnMsg = sizeKB > 700 ? `⚠ ${sizeKB} KB — large file, consider compressing in Acrobat` : `${sizeKB} KB`;
+    const warning = `<span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:${warnColor};margin-left:6px;">${warnMsg}</span>`;
+    div.innerHTML = `<div class="file-dot"></div><span class="file-name">${item.file.name}</span>${warning}<span class="file-status">${statusText}</span>${item.status==='pending'?`<button class="file-remove" onclick="removeFile(${i})">✕</button>`:''}`;
+    fileListEl.appendChild(div);
+  });
+}
+
+window.removeFile = function(i) { files.splice(i,1); renderFileList(); runBtn.disabled = files.length===0; };
+
+fileInput.addEventListener('change', e => { if (e.target.files.length) addFiles(Array.from(e.target.files)); fileInput.value=''; });
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('dragover'); addFiles(Array.from(e.dataTransfer.files)); });
+
+const MAX_PAGES = 99;
+
+// Safe chunked base64 encoder — avoids call stack overflow on large files
+function uint8ToBase64(uint8) {
+  let binary = '';
+  const chunkSize = 8192;
+  for (let i = 0; i < uint8.length; i += chunkSize) {
+    binary += String.fromCharCode(...uint8.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function toBase64(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  const uint8 = new Uint8Array(arrayBuffer);
+
+  try {
+    const pdfDoc = await PDFLib.PDFDocument.load(uint8, { ignoreEncryption: true });
+    const totalPages = pdfDoc.getPageCount();
+
+    if (totalPages <= MAX_PAGES) {
+      return { base64: uint8ToBase64(uint8), pageCount: totalPages, truncated: false };
+    }
+
+    // Truncate to first 99 pages
+    const truncatedDoc = await PDFLib.PDFDocument.create();
+    const pageIndices = Array.from({ length: MAX_PAGES }, (_, i) => i);
+    const copiedPages = await truncatedDoc.copyPages(pdfDoc, pageIndices);
+    copiedPages.forEach(p => truncatedDoc.addPage(p));
+    const truncatedBytes = await truncatedDoc.save();
+    return { base64: uint8ToBase64(truncatedBytes), pageCount: totalPages, truncated: true };
+
+  } catch (err) {
+    // If PDF parsing fails, send raw bytes as-is
+    return { base64: uint8ToBase64(uint8), pageCount: null, truncated: false };
+  }
+}
+
+// Post-process incomeStatement array to correct known AI output issues
+function postProcessIncomeStatement(items) {
+  if (!Array.isArray(items)) return items;
+
+  // Issue 1: zero-budget noise patterns the AI produces despite prompt rules
+  const zeroBudgetPattern = /N\/A|Infinite|Cannot calculate|no budget|budget is zero|budget was zero|budget not set|budget not available|no budget set/i;
+
+  // Issue 3: known income account prefixes that must never appear in Section C
+  const incomeAccountPattern = /\b(30100|30450|30500|30600|30800|30820|30850)\b|42-30/;
+
+  // Issue 2: Section A keywords that require ** bold wrapping
+  const sectionAPattern = /NSF|Leasing Fee|Collection Fee/i;
+
+  // Build set of account numbers that appear in Section D (positive actuals confirmed)
+  const sectionDAccounts = new Set(
+    items
+      .filter(i => /^Expense variance:/i.test(String(i)))
+      .map(i => { const m = String(i).match(/\((\d{5}-\d{2}|[\d-]+)\)/); return m ? m[1] : null; })
+      .filter(Boolean)
+  );
+
+  // Build set of account numbers where Section D shows Actual: $0.00 (zero current-period actual)
+  // These cannot simultaneously have a negative actual in Section C
+  const zeroCPActualAccounts = new Set(
+    items
+      .filter(i => /^Expense variance:/i.test(String(i)) && /Actual:\s*\$0\.00/i.test(String(i)))
+      .map(i => { const m = String(i).match(/\((\d{5}-\d{2}|[\d-]+)\)/); return m ? m[1] : null; })
+      .filter(Boolean)
+  );
+
+  // Valid account numbers for each Section A label — enforce regardless of what the model outputs
+  const validNSF        = /\b(42-)?30850-00\b/;
+  const validLeasing    = /\b(42-)?30450-00\b/;
+  const validCollection = /\b(42-)?30800-00\b/;
+
+  const processed = items
+    .filter(item => {
+      const s = String(item);
+      // Remove any item containing zero-budget noise
+      if (zeroBudgetPattern.test(s)) return false;
+      // Enforce Section A account-number rules — drop bold items with wrong account numbers
+      if (/^\*\*NSF/i.test(s)        && !validNSF.test(s))        return false;
+      if (/^\*\*Leasing Fee/i.test(s) && !validLeasing.test(s))    return false;
+      if (/^\*\*Collection Fee/i.test(s) && !validCollection.test(s)) return false;
+      // Remove Section C items that are actually income accounts
+      if (/^Negative expense:/i.test(s) && incomeAccountPattern.test(s)) return false;
+      // Remove Section C items below $50 (likely positive-actual misreads)
+      if (/^Negative expense:/i.test(s)) {
+        const amtMatch = s.match(/\(\$?([\d,]+\.?\d*)\)/);
+        if (amtMatch && parseFloat(amtMatch[1].replace(/,/g, '')) < 50) return false;
+        // Remove if model reported a zero current-period budget (likely YTD misread)
+        const cpbMatch = s.match(/\[cpb:\$?([\d,]+\.?\d*)\]/i);
+        if (cpbMatch && parseFloat(cpbMatch[1].replace(/,/g, '')) === 0) return false;
+        // Remove if current-period variance is negative (actual > budget = over-budget account,
+        // meaning the model read the variance column as the actual instead of a true negative)
+        // Match [cpv:neg] or [cpv:negative] in case model uses the long form
+        if (/\[cpv:\s*neg/i.test(s)) return false;
+        // Fallback: if model omitted the cpv tag entirely but cpb is non-zero,
+        // the account has budget activity — require the tag to be present to pass
+        const hasCpvTag = /\[cpv:/i.test(s);
+        if (!hasCpvTag && cpbMatch && parseFloat(cpbMatch[1].replace(/,/g, '')) > 0) return false;
+        // Remove Section C items whose account also appears in Section D (actual is positive)
+        // or where Section D confirmed that account has $0 current-period actual
+        const acctMatch = s.match(/\((\d{5}-\d{2}|[\d-]+)\)/g);
+        if (acctMatch) {
+          const acct = acctMatch[acctMatch.length - 1].replace(/[()]/g, '');
+          if (sectionDAccounts.has(acct)) return false;
+          if (zeroCPActualAccounts.has(acct)) return false;
+        }
+      }
+      return true;
+    })
+    .filter(item => {
+      // Issue 5: remove variance items reporting <= 10% (AI threshold compliance)
+      const s = String(item);
+      if (/variance:/i.test(s)) {
+        const match = s.match(/Variance:\s*([-\d.]+)%/i);
+        if (match && Math.abs(parseFloat(match[1])) <= 10) return false;
+      }
+      // Remove Section D items where Budget is $0.00 (zero-budget slip-through)
+      if (/^Expense variance:/i.test(s) || /^Income variance:/i.test(s)) {
+        const budgetMatch = s.match(/Budget:\s*\$?([\d,]+\.?\d*)/i);
+        if (budgetMatch && parseFloat(budgetMatch[1].replace(/,/g, '')) === 0) return false;
+        // Remove variances where absolute dollar difference < $50
+        const actualMatch = s.match(/Actual:\s*\$?([\d,]+\.?\d*)/i);
+        if (actualMatch && budgetMatch) {
+          const actual = parseFloat(actualMatch[1].replace(/,/g, ''));
+          const budget = parseFloat(budgetMatch[1].replace(/,/g, ''));
+          if (Math.abs(actual - budget) < 50) return false;
+        }
+      }
+      return true;
+    })
+    .map(item => {
+      // Issue 2: ensure Section A items are bold
+      let s = String(item);
+      if (sectionAPattern.test(s) && !s.startsWith('**')) s = `**${s}**`;
+      // Normalize variance percentages to positive (e.g. -100.0% → 100.0%)
+      s = s.replace(/Variance:\s*-(\d+\.?\d*)%/g, 'Variance: $1%');
+      // Strip the [cpb:...] and [cpv:...] tags (used for filtering only, not displayed)
+      s = s.replace(/\s*\[cpb:[^\]]+\]/gi, '').replace(/\s*\[cpv:[^\]]+\]/gi, '');
+      return s;
+    });
+
+  return processed.length === 0 ? ['OK'] : processed;
+}
+
+async function analyzePDF(file, monthDisplay) {
+  const { base64, pageCount, truncated } = await toBase64(file);
+  const truncationNote = truncated ? `\n\nNOTE: This document was ${pageCount} pages. Only the first ${MAX_PAGES} pages have been provided for analysis.` : '';
+  const prompt = `You are an expert HOA financial analyst for PMI Northeast Atlanta. Report period: ${monthDisplay}.${truncationNote}
+
+CRITICAL OUTPUT RULE: You must respond with ONLY a valid JSON object. No prose, no steps, no explanations, no markdown. Your entire response must be parseable by JSON.parse(). Any other format will cause a system failure.
+
+Analyze this HOA financial report package and perform the following checks:
+
+STEP 1 – BALANCE SHEET REVIEW:
+- Operating Column: Confirm Total Operating Assets = Total Operating Liabilities + Equity. Balanced → "OK". If not → report both figures and the difference.
+- Reserve Column: Same check for reserve side. Balanced → "OK". If not → report both figures and difference.
+
+STEP 2 – PRE-PAID ASSESSMENT RECONCILIATION:
+- Compare Balance Sheet "Pre-Paid Assessments" line to the total on the Pre-Paid Homeowners list.
+- Match → "OK". Mismatch → report both figures. Not present in document → "Not provided".
+
+STEP 3 – INCOME STATEMENT REVIEW:
+Use ONLY the CURRENT PERIOD ACTUAL column (the first column of numbers). Never use variance, year-to-date, or budget columns to determine whether a value is negative.
+
+Before classifying any account, determine whether it is an INCOME account or an EXPENSE account based on its section heading in the income statement. Income accounts appear under headings like REVENUE, OTHER REVENUE, OPERATING INCOME. Expense accounts appear under headings like GENERAL/ADMINISTRATIVE, UTILITIES, LANDSCAPE, AMENITY EXPENSES, BUILDING MAINTENANCE, RESERVE EXPENSES, OPERATING EXPENSE.
+
+Produce findings in this exact order. Each finding is a separate string in the JSON array.
+
+SECTION A — SPECIAL INCOME ITEMS (always list these first):
+Report ONLY these three account numbers if they appear with a non-zero Current Period Actual value. Match by account NUMBER only — do not use account name or description to decide:
+- Account 30850-00 or 42-30850-00 (NSF): format as "**NSF Charges: [account] ($X.XX)**"
+- Account 30450-00 or 42-30450-00 (Leasing Fee): format as "**Leasing Fee Income: [account] ($X.XX)**"
+- Account 30800-00 or 42-30800-00 (Collection Fee): format as "**Collection Fee Income: [account] ($X.XX)**"
+These MUST be wrapped in ** ** for bold rendering. Do not include any other accounts in Section A, regardless of account name or activity type.
+
+SECTION B — NOTABLE INCOME VARIANCES:
+Only report INCOME accounts (Revenue section) where ALL of these are true:
+- The Current Period Budget is greater than zero
+- The variance between Current Period Actual and Current Period Budget exceeds 10%
+- The account is NOT one already reported in Section A
+STRICT RULE: Skip entirely if Current Period Budget is zero or blank. Do not report "infinite variance" or "no budget set" items.
+Format: "Income variance: [account name] ([account #]) — Actual: $X.XX, Budget: $X.XX, Variance: X.X%"
+
+SECTION C — NEGATIVE EXPENSE ACTUALS:
+Only report EXPENSE accounts where the Current Period Actual is itself a negative number (shown in parentheses in the Actual column).
+
+COLUMN POSITIONS — each row has exactly 7 values in this order:
+  [1] Current Period Actual  [2] Current Period Budget  [3] Current Period Variance
+  [4] YTD Actual             [5] YTD Budget             [6] YTD Variance  [7] Annual Budget
+Dashes (-) count as position holders (value = zero). Count every value including dashes.
+
+ELIGIBILITY TEST — for each account, identify position [1] (the Current Period Actual):
+  • If position [1] is a dash or zero → Actual is zero → SKIP. A zero actual cannot be negative.
+  • If position [1] is a positive number → Actual is positive → SKIP.
+  • If position [1] is in parentheses → Actual is negative → REPORT.
+
+COMMON MISREADS TO AVOID:
+  675.00  425.00  (250.00)  ...   → pos[1]=675.00 (positive) → SKIP. The (250.00) is position [3] Variance.
+  -       250.00   250.00   3,600.00  750.00  (2,850.00)  → pos[1]=dash (zero) → SKIP. The (2,850.00) is position [6] YTD Variance.
+  (100.00)  125.00  225.00  ...   → pos[1]=(100.00) (negative) → REPORT.
+
+SKIP any account where: (a) the Budget column is in parentheses (credit budget); (b) the Variance is negative but the Actual is positive.
+Do NOT include income accounts (30xxx, 42-30xxx accounts) here.
+REQUIRED TAGS — you MUST include both tags on every Section C entry or the entry will be rejected by the system:
+  [cpb:$Y.YY] = Current Period Budget amount from position [2] (use $0.00 if budget is a dash or zero)
+  [cpv:neg]   = position [3] Variance has parentheses around it, e.g. (75.39) or (523.00) → tag is [cpv:neg]
+  [cpv:pos]   = position [3] Variance is a plain number or dash with NO parentheses, e.g. 225.00 or - → tag is [cpv:pos]
+  IMPORTANT: parentheses around the variance number = [cpv:neg]. Do NOT strip the parentheses and treat the number as positive.
+  Example: 205.39  130.00  (75.39)  → pos[1]=205.39 positive → SKIP entirely. But if somehow reported, cpv tag would be [cpv:neg] because (75.39) has parentheses.
+Format: "Negative expense: [account name] ([account #]) ($X.XX) [cpb:$Y.YY] [cpv:pos|neg]"
+
+SECTION D — NOTABLE EXPENSE VARIANCES:
+COLUMN REMINDER: The columns in order are Actual | Budget | Variance | YTD Actual | YTD Budget | YTD Variance | Annual Budget.
+Report Actual from column 1 and Budget from column 2. NEVER report the Variance column (column 3) as the Actual. The Actual is always the FIRST number on the row.
+Examples of correct column reading:
+  198.04   50.00   (148.04)  ...  → Actual=$198.04, Budget=$50.00  (NOT $148.04)
+  786.97  270.00   (516.97)  ...  → Actual=$786.97, Budget=$270.00  (NOT $516.97)
+  1,893.75  2,208.33  314.58  ...  → Actual=$1,893.75, Budget=$2,208.33  (NOT $314.58)
+
+Only report EXPENSE accounts where ALL of these are true:
+- The Current Period Budget is a positive number greater than zero
+- The variance between Actual and Budget exceeds 10%
+- The absolute dollar difference between Actual and Budget is $50.00 or more
+SKIP any account where the Budget is zero, blank, or shown in parentheses (credit budget).
+SKIP any account where the absolute dollar difference is less than $50, even if the percentage is large.
+Include accounts where Actual is $0 — a $0 actual against a budget of $50+ is a reportable variance.
+Always express variance as a positive percentage. Format: "Expense variance: [account name] ([account #]) — Actual: $X.XX, Budget: $X.XX, Variance: X.X%"
+
+IMPORTANT RULES THAT APPLY TO ALL SECTIONS:
+- ABSOLUTE RULE: If the Current Period Budget for any account is zero, blank, or not set, you MUST skip that account completely. Do not include it. Do not write "N/A", "Infinite%", "Cannot calculate", "no budget", "budget is zero", "budget not set", or any similar phrase. Omit the account entirely as if it does not exist.
+- Never report any item with a zero Current Period Budget in Section B or D
+- Never report "infinite variance", "no budget", "budget is zero", or "N/A variance" items
+- Never classify an income account as a negative expense
+- Section A items MUST use ** ** bold markers
+- If all four sections are empty → return ["OK"]
+
+Extract the community/association name from the document.
+
+Respond ONLY with valid JSON, no markdown fences:
+{
+  "communityName": "Full association name from document",
+  "bsOperating": "OK or issue description",
+  "bsReserve": "OK or issue description",
+  "prepaid": "OK or issue description",
+  "incomeStatement": ["OK"] or ["**NSF Charges: 30850-00 ($25.00)**", "Income variance: ...", "Negative expense: ...", "Expense variance: ..."]
+}`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': getApiKey(),
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 4096,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
+          { type: 'text', text: prompt }
+        ]
+      }]
+    })
+  });
+
+  if (!response.ok) { const err = await response.json(); throw new Error(err.error?.message || 'API error'); }
+  const data = await response.json();
+  const raw = data.content.map(i => i.text || '').join('');
+  let parsed;
+  try {
+    parsed = JSON.parse(raw.replace(/```json|```/g,'').trim());
+  } catch (e) {
+    throw new Error('PDF could not be parsed — file may be corrupt, encrypted, or unreadable. Try re-saving the PDF in Acrobat.');
+  }
+  if (Array.isArray(parsed.incomeStatement)) {
+    parsed.incomeStatement = postProcessIncomeStatement(parsed.incomeStatement);
+  }
+  parsed.__pageCount = pageCount;
+  parsed.__truncated = truncated;
+  return parsed;
+}
+
+let globalResults = [], globalMonth = '', perfLog = [];
+
+document.getElementById('runBtn').addEventListener('click', async () => {
+  if (!getApiKey()) { showError('Please enter and save your Anthropic API key first.'); return; }
+  if (!files.length) return;
+  hideError();
+  runBtn.disabled = true;
+  document.getElementById('results').classList.remove('visible');
+  document.getElementById('progressArea').style.display = 'block';
+
+  const month = document.getElementById('reportMonth').value;
+  const monthDisplay = month ? new Date(month+'-02').toLocaleDateString('en-US',{month:'long',year:'numeric'}) : 'this period';
+  const results = [];
+  perfLog = [];
+  const batchStart = Date.now();
+
+  for (let i = 0; i < files.length; i++) {
+    const item = files[i];
+    item.status = 'processing';
+    renderFileList();
+    const pct = Math.round((i / files.length) * 100);
+    document.getElementById('progressFill').style.width = pct + '%';
+
+    // Performance tracking for this file
+    const fileLog = {
+      fileName: item.file.name,
+      fileSizeKB: Math.round(item.file.size / 1024),
+      startTime: new Date().toLocaleTimeString(),
+      startMs: Date.now(),
+      endMs: null,
+      durationSecs: null,
+      attempts: 0,
+      rateLimitHits: 0,
+      outcome: 'pending',
+      betweenFilePauseSecs: 0,
+      pageCount: null,
+      truncated: false
+    };
+
+    // Analyze with automatic retry on rate limit errors
+    const maxRetries = 3;
+    let attempt = 0;
+    let success = false;
+    while (attempt <= maxRetries && !success) {
+      fileLog.attempts = attempt + 1;
+      try {
+        document.getElementById('progressLabel').textContent = `[${i+1}/${files.length}] ${item.file.name} — Analyzing...`;
+        const _res = await analyzePDF(item.file, monthDisplay);
+      fileLog.pageCount = _res.__pageCount;
+      fileLog.truncated = _res.__truncated || false;
+      delete _res.__pageCount; delete _res.__truncated;
+      item.result = _res;
+        item.status = 'done';
+        fileLog.outcome = 'success';
+        success = true;
+      } catch (err) {
+        const isRateLimit = err.message && (err.message.toLowerCase().includes('rate limit') || err.message.toLowerCase().includes('rate_limit'));
+        const isTokenLimit = err.message && err.message.toLowerCase().includes('too long');
+        if (isTokenLimit) { 
+          item.status = 'error';
+          item.result = { communityName: item.file.name.replace('.pdf',''), bsOperating: 'Error: Document too large for API (token limit exceeded). Compress in Acrobat and retry.', bsReserve: 'Error', prepaid: 'Error', incomeStatement: ['Error'] };
+          break;
+        }
+        if (isRateLimit && attempt < maxRetries) {
+          attempt++;
+          fileLog.rateLimitHits++;
+          const retrySecs = 60;
+          for (let s = retrySecs; s > 0; s--) {
+            document.getElementById('progressLabel').textContent = `Rate limit hit — retrying ${item.file.name} in ${s}s (attempt ${attempt} of ${maxRetries})...`;
+            await new Promise(r => setTimeout(r, 1000));
+          }
+        } else {
+          item.status = 'error';
+          fileLog.outcome = isRateLimit ? 'failed-rate-limit' : 'failed-error';
+          item.result = { communityName: item.file.name.replace('.pdf',''), bsOperating: 'Error: '+err.message, bsReserve: 'Error', prepaid: 'Error', incomeStatement: ['Error'] };
+          break;
+        }
+      }
+    }
+
+    fileLog.endMs = Date.now();
+    fileLog.durationSecs = Math.round((fileLog.endMs - fileLog.startMs) / 1000);
+
+    results.push(item.result);
+    renderFileList();
+
+    // Duration-based pause — Tier 2 timings (90k tokens/min)
+    if (i < files.length - 1) {
+      const durSecs = fileLog.durationSecs;
+      let waitSecs, pauseTier;
+      if (durSecs > 90)      { waitSecs = 30; pauseTier = `very slow analysis (${durSecs}s)`; }
+      else if (durSecs > 45) { waitSecs = 20; pauseTier = `slow analysis (${durSecs}s)`; }
+      else if (durSecs > 15) { waitSecs = 8;  pauseTier = `normal analysis (${durSecs}s)`; }
+      else                   { waitSecs = 5;  pauseTier = `fast analysis (${durSecs}s)`; }
+      fileLog.betweenFilePauseSecs = waitSecs;
+      for (let s = waitSecs; s > 0; s--) {
+        document.getElementById('progressLabel').textContent = `Waiting ${s}s before next file (${pauseTier})...`;
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+
+    perfLog.push(fileLog);
+  }
+
+  // Batch summary
+  const batchDurationSecs = Math.round((Date.now() - batchStart) / 1000);
+  const totalRetries = perfLog.reduce((s, r) => s + r.rateLimitHits, 0);
+  perfLog.batchSummary = {
+    totalFiles: files.length,
+    totalDurationSecs: batchDurationSecs,
+    totalRateLimitHits: totalRetries,
+    runDate: new Date().toLocaleDateString('en-US'),
+    runTime: new Date().toLocaleTimeString()
+  };
+
+  document.getElementById('progressFill').style.width = '100%';
+  document.getElementById('progressLabel').textContent = `Complete — ${results.length} communities analyzed.`;
+  setTimeout(() => { document.getElementById('progressArea').style.display = 'none'; }, 2000);
+
+  globalResults = results;
+  globalMonth = monthDisplay;
+  renderResults(results, monthDisplay);
+  runBtn.disabled = false;
+});
+
+function isOK(val) {
+  if (!val) return false;
+  if (Array.isArray(val)) return val.length === 1 && val[0].toString().toUpperCase().trim() === 'OK';
+  return val.toString().toUpperCase().trim() === 'OK';
+}
+
+function renderResults(data, monthDisplay) {
+  const reviewer = document.getElementById('reviewerName').value.trim();
+  document.getElementById('resultsMeta').textContent = `${monthDisplay}${reviewer?' · '+reviewer:''}`;
+  let crit=0, warn=0, ok=0;
+  const tbody = document.getElementById('tableBody');
+  tbody.innerHTML = '';
+
+  data.forEach(a => {
+    const bsOpOK = isOK(a.bsOperating), bsResOK = isOK(a.bsReserve), ppOK = isOK(a.prepaid), isOKr = isOK(a.incomeStatement);
+    const hasCrit = !bsOpOK || !bsResOK || !ppOK;
+    if (hasCrit) crit++; else if (!isOKr) warn++; else ok++;
+    const tr = document.createElement('tr');
+    tr.className = hasCrit ? 'row-critical' : !isOKr ? 'row-warning' : 'row-ok';
+    tr.innerHTML = `<td>${esc(a.communityName||'Unknown')}</td><td>${renderCell(a.bsOperating)}</td><td>${renderCell(a.bsReserve)}</td><td>${renderCell(a.prepaid)}</td><td>${renderISCell(a.incomeStatement)}</td>`;
+    tbody.appendChild(tr);
+  });
+
+  document.getElementById('statsBar').innerHTML = `
+    <div class="stat-pill"><div class="stat-dot red"></div>${crit} Balance Sheet Issues</div>
+    <div class="stat-pill"><div class="stat-dot yellow"></div>${warn} Income Warnings</div>
+    <div class="stat-pill"><div class="stat-dot green"></div>${ok} Fully Clear</div>
+    <div class="stat-pill">${data.length} Communities</div>
+  `;
+  document.getElementById('results').classList.add('visible');
+  document.getElementById('results').scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+function renderCell(val) {
+  if (isOK(val)) return '<span class="cell-ok">OK</span>';
+  if (String(val||'').toLowerCase().trim() === 'not provided') return `<span class="cell-dim">Not provided</span>`;
+  return `<span class="cell-issue">${esc(String(val||''))}</span>`;
+}
+function renderISCell(val) {
+  if (isOK(val)) return '<span class="cell-ok">OK</span>';
+  if (!Array.isArray(val)) return `<span class="cell-warn">${esc(String(val))}</span>`;
+  return val.map(v => {
+    if (v.toString().toUpperCase().trim() === 'OK') return '<span class="cell-ok">OK</span>';
+    // Render **bold** items (Section A special items)
+    const isBold = v.startsWith('**') && v.endsWith('**');
+    const text = isBold ? v.slice(2, -2) : v;
+    const style = isBold
+      ? 'class="cell-warn-line" style="display:block;padding:2px 0;font-weight:600;color:var(--red);"'
+      : 'class="cell-warn-line cell-warn"';
+    return `<span ${style}>${esc(text)}</span>`;
+  }).join('');
+}
+function esc(str) { const d=document.createElement('div'); d.appendChild(document.createTextNode(String(str))); return d.innerHTML; }
+function showError(msg) { const b=document.getElementById('errorBox'); b.textContent=msg; b.classList.add('visible'); }
+function hideError() { document.getElementById('errorBox').classList.remove('visible'); }
+
+// Excel Export
+document.getElementById('excelBtn').addEventListener('click', async () => {
+  if (!globalResults.length) return;
+  const reviewer = document.getElementById('reviewerName').value.trim();
+  const month = document.getElementById('reportMonth').value || 'report';
+  const workbook = new ExcelJS.Workbook();
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  const NAVY   = 'FF1A2E4A';
+  const DGRAY  = 'FF2C3E50';
+  const LTBG   = 'FFF0F4F8';
+  const WHITE  = 'FFFFFFFF';
+  const BLACK  = 'FF000000';
+  const OK_FILL   = 'FFE8F5E9'; const OK_FONT   = 'FF276221';
+  const WARN_FILL = 'FFFFEB9C'; const WARN_FONT = 'FF9C6500';
+  const CRIT_FILL = 'FFFFC7CE'; const CRIT_FONT = 'FF9C0006';
+  const RED_TEXT  = 'FFCC3300';
+  const ORG_TEXT  = 'FFCC6600';
+  const DRED_TEXT = 'FF8B0000';
+
+  function hdrCell(cell) {
+    cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: WHITE } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DGRAY } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+  }
+
+  function statusColors(status) {
+    if (status === 'OK')       return { fill: OK_FILL,   font: OK_FONT };
+    if (status === 'CRITICAL') return { fill: CRIT_FILL, font: CRIT_FONT };
+    return                            { fill: WARN_FILL, font: WARN_FONT };
+  }
+
+  // Build rich-text runs for Income Statement cell
+  function buildISRichText(items) {
+    const arr = Array.isArray(items) ? items : [String(items || '')];
+    const runs = [];
+    arr.forEach((item, idx) => {
+      const s   = String(item);
+      const pre = idx === 0 ? '' : '\n';
+      const base = { name: 'Arial', size: 10 };
+      if (/NSF|Leasing Fee|Collection Fee/i.test(s)) {
+        runs.push({ text: pre + s.replace(/\*\*/g, ''), font: { ...base, bold: true, color: { argb: DRED_TEXT } } });
+      } else if (/^Negative expense:/i.test(s)) {
+        runs.push({ text: pre + s, font: { ...base, bold: true, color: { argb: RED_TEXT } } });
+      } else if (/^Income variance:/i.test(s)) {
+        runs.push({ text: pre + s, font: { ...base, bold: true, color: { argb: ORG_TEXT } } });
+      } else if (/^Expense variance:/i.test(s)) {
+        // Red if actual > budget (over-budget), black if actual <= budget (under-budget)
+        const actualMatch = s.match(/Actual:\s*\$?([\d,]+\.?\d*)/i);
+        const budgetMatch = s.match(/Budget:\s*\$?([\d,]+\.?\d*)/i);
+        const overBudget  = actualMatch && budgetMatch &&
+          parseFloat(actualMatch[1].replace(/,/g, '')) > parseFloat(budgetMatch[1].replace(/,/g, ''));
+        runs.push({ text: pre + s, font: { ...base, color: { argb: overBudget ? RED_TEXT : BLACK } } });
+      } else {
+        runs.push({ text: pre + s, font: { ...base, color: { argb: BLACK } } });
+      }
+    });
+    return runs.length ? { richText: runs } : '';
+  }
+
+  // ── Financial Review sheet ───────────────────────────────────────────────
+  const ws = workbook.addWorksheet('Financial Review');
+  ws.columns = [
+    { width: 38 }, { width: 30 }, { width: 30 },
+    { width: 30 }, { width: 68 }, { width: 13 }
+  ];
+
+  // Title
+  const r1 = ws.addRow(['PMI Northeast Atlanta — HOA Financial Review','','','','','']);
+  ws.mergeCells(r1.number, 1, r1.number, 6);
+  r1.height = 22;
+  Object.assign(r1.getCell(1), {
+    font: { name: 'Arial', size: 13, bold: true, color: { argb: WHITE } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: NAVY } },
+    alignment: { horizontal: 'left', vertical: 'middle' }
+  });
+
+  // Subtitle
+  const r2 = ws.addRow([`Period: ${globalMonth}${reviewer ? '   |   Reviewer: ' + reviewer : ''}   |   Generated: ${new Date().toLocaleDateString('en-US')}`, '','','','','']);
+  ws.mergeCells(r2.number, 1, r2.number, 6);
+  r2.height = 16;
+  Object.assign(r2.getCell(1), {
+    font: { name: 'Arial', size: 10, color: { argb: 'FF444444' } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: LTBG } },
+    alignment: { horizontal: 'left', vertical: 'middle' }
+  });
+
+  ws.addRow([]); // blank
+
+  // Header
+  const rh = ws.addRow(['Community', 'BS Operating', 'BS Reserve', 'Pre-Paid Reconciliation', 'Income Statement Review', 'Status']);
+  rh.height = 18;
+  rh.eachCell(cell => hdrCell(cell));
+
+  // Data rows
+  globalResults.forEach(a => {
+    const bsOpOK = isOK(a.bsOperating), bsResOK = isOK(a.bsReserve),
+          ppOK   = isOK(a.prepaid),      isOKr   = isOK(a.incomeStatement);
+    const status = (!bsOpOK || !bsResOK || !ppOK) ? 'CRITICAL' : !isOKr ? 'WARNING' : 'OK';
+    const sc = statusColors(status);
+
+    const dr = ws.addRow([
+      a.communityName || 'Unknown',
+      bsOpOK   ? 'OK' : String(a.bsOperating || ''),
+      bsResOK  ? 'OK' : String(a.bsReserve   || ''),
+      ppOK     ? 'OK' : String(a.prepaid      || ''),
+      '',    // set below as rich text
+      status
+    ]);
+    dr.height = 80;
+
+    // Community
+    dr.getCell(1).font      = { name: 'Arial', size: 10, bold: true };
+    dr.getCell(1).alignment = { vertical: 'top', wrapText: true };
+
+    // BS columns
+    [2, 3, 4].forEach(col => {
+      const cell  = dr.getCell(col);
+      const colOK = col === 2 ? bsOpOK : col === 3 ? bsResOK : ppOK;
+      cell.font      = { name: 'Arial', size: 10,
+                         bold: colOK, color: { argb: colOK ? OK_FONT : BLACK } };
+      cell.fill      = colOK ? { type: 'pattern', pattern: 'solid', fgColor: { argb: OK_FILL } } : undefined;
+      cell.alignment = { horizontal: 'center', vertical: 'top', wrapText: true };
+    });
+
+    // Income Statement — rich text
+    const isCell = dr.getCell(5);
+    isCell.value     = buildISRichText(a.incomeStatement);
+    isCell.alignment = { vertical: 'top', wrapText: true };
+
+    // Status
+    const stCell = dr.getCell(6);
+    stCell.font      = { name: 'Arial', size: 10, bold: true, color: { argb: sc.font } };
+    stCell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: sc.fill } };
+    stCell.alignment = { horizontal: 'center', vertical: 'top' };
+  });
+
+  // ── Performance Log sheet ────────────────────────────────────────────────
+  if (perfLog.length > 0) {
+    const ws2 = workbook.addWorksheet('Performance Log');
+    ws2.columns = [
+      { width: 42 }, { width: 15 }, { width: 13 }, { width: 15 },
+      { width: 13 }, { width: 17 }, { width: 11 }, { width: 17 },
+      { width: 25 }, { width: 21 }
+    ];
+    const summary = perfLog.batchSummary || {};
+
+    const p1 = ws2.addRow(['PMI Northeast Atlanta — Performance Log', ...Array(9).fill('')]);
+    ws2.mergeCells(p1.number, 1, p1.number, 10);
+    p1.height = 22;
+    Object.assign(p1.getCell(1), {
+      font: { name: 'Arial', size: 13, bold: true, color: { argb: WHITE } },
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: NAVY } },
+      alignment: { horizontal: 'left', vertical: 'middle' }
+    });
+
+    [[`Run Date: ${summary.runDate || ''}   |   Run Time: ${summary.runTime || ''}   |   Pause tiers Tier 2 (by analysis duration): <15s=5s, 15-45s=8s, 45-90s=20s, >90s=30s | Max retries: 3`],
+     [`Total Files: ${summary.totalFiles || perfLog.length}   |   Total Duration: ${summary.totalDurationSecs || ''}s   |   Total Rate Limit Hits: ${summary.totalRateLimitHits || 0}`]
+    ].forEach(rowData => {
+      const pr = ws2.addRow([...rowData, ...Array(9).fill('')]);
+      ws2.mergeCells(pr.number, 1, pr.number, 10);
+      pr.height = 16;
+      Object.assign(pr.getCell(1), {
+        font: { name: 'Arial', size: 10, color: { argb: 'FF444444' } },
+        fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: LTBG } },
+        alignment: { horizontal: 'left', vertical: 'middle' }
+      });
+    });
+
+    ws2.addRow([]);
+
+    const ph = ws2.addRow(['File Name','File Size (KB)','Page Count','Truncated to 99','Start Time','Duration (secs)','Attempts','Rate Limit Hits','Between-File Pause (secs)','Outcome']);
+    ph.height = 18;
+    ph.eachCell(cell => hdrCell(cell));
+
+    perfLog.forEach(r => {
+      const pr = ws2.addRow([
+        r.fileName, r.fileSizeKB, r.pageCount || 'unknown', r.truncated ? 'YES' : 'no',
+        r.startTime, r.durationSecs, r.attempts, r.rateLimitHits, r.betweenFilePauseSecs, r.outcome
+      ]);
+      pr.eachCell((cell, col) => {
+        cell.font      = { name: 'Arial', size: 10 };
+        if (col > 1) cell.alignment = { horizontal: 'center' };
+      });
+      const oc = pr.getCell(10);
+      if (r.outcome === 'success') oc.font = { name: 'Arial', size: 10, color: { argb: OK_FONT } };
+      else if (r.outcome !== 'success') oc.font = { name: 'Arial', size: 10, color: { argb: CRIT_FONT } };
+    });
+
+    const lastRow = 5 + perfLog.length;
+    const tot = ws2.addRow(['TOTALS','','','','',
+      { formula: `SUM(F6:F${lastRow})` }, '',
+      { formula: `SUM(H6:H${lastRow})` }, '', '']);
+    tot.eachCell(cell => {
+      cell.font = { name: 'Arial', size: 10, bold: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: LTBG } };
+    });
+  }
+
+  // ── Download ─────────────────────────────────────────────────────────────
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob   = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url    = URL.createObjectURL(blob);
+  const a      = document.createElement('a');
+  a.href = url; a.download = `HOA_Financial_Review_${month}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+document.getElementById('printBtn').addEventListener('click', () => window.print());
+document.getElementById('resetBtn').addEventListener('click', () => {
+  files=[]; globalResults=[]; renderFileList();
+  runBtn.disabled=true;
+  document.getElementById('results').classList.remove('visible');
+  document.getElementById('progressArea').style.display='none';
+  hideError();
+  window.scrollTo({top:0,behavior:'smooth'});
+});
+</script>
+</body>
+</html>
