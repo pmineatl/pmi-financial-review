@@ -112,7 +112,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v26</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v28</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -409,7 +409,14 @@ Before classifying any account, determine whether it is an INCOME account or an 
 Produce findings in this exact order. Each finding is a separate string in the JSON array.
 
 SECTION A — SPECIAL INCOME ITEMS (always list these first):
-Report ONLY these three account numbers if they appear with a non-zero Current Period Actual value. Match by account NUMBER only — do not use account name or description to decide:
+Report ONLY these three account numbers if they appear as a line item in the INCOME STATEMENT (Revenue/Income section) with a non-zero Current Period Actual value.
+CRITICAL: Only read these accounts from the income statement revenue rows. NEVER report them if the account number appears anywhere else in the document, including:
+  • Invoice line items or addenda (lines containing "Addendum", "Invoice:", "Leasing Management Fee - $", or unit/owner account codes like "Account - XXXNNN")
+  • AR aging reports or homeowner ledger details
+  • Transaction histories or payment records
+  • Any section with a header other than REVENUE / INCOME
+A valid income statement row looks like: "Account Name   [account#]   $X.XX   $X.XX   ($X.XX)   ..."  with multiple dollar columns.
+A transaction detail line (NOT valid) looks like: "Addendum for 4/30/2026; Leasing Management Fee - $120.00 Account - ASHLX027" — this must be IGNORED.
 - Account 30850-00 or 42-30850-00 (NSF): format as "**NSF Charges: [account] ($X.XX)**"
 - Account 30450-00 or 42-30450-00 (Leasing Fee): format as "**Leasing Fee Income: [account] ($X.XX)**"
 - Account 30800-00 or 42-30800-00 (Collection Fee): format as "**Collection Fee Income: [account] ($X.XX)**"
@@ -437,9 +444,11 @@ ELIGIBILITY TEST — for each account, identify position [1] (the Current Period
   • If position [1] is in parentheses → Actual is negative → REPORT.
 
 COMMON MISREADS TO AVOID:
-  675.00  425.00  (250.00)  ...   → pos[1]=675.00 (positive) → SKIP. The (250.00) is position [3] Variance.
-  -       250.00   250.00   3,600.00  750.00  (2,850.00)  → pos[1]=dash (zero) → SKIP. The (2,850.00) is position [6] YTD Variance.
-  (100.00)  125.00  225.00  ...   → pos[1]=(100.00) (negative) → REPORT.
+  675.00    425.00  (250.00)  ...              → pos[1]=675.00 (positive) → SKIP. The (250.00) is position [3] Variance.
+  2,750.00  1,650.00  (1,100.00)  ...         → pos[1]=2,750.00 (positive) → SKIP. The (1,100.00) is position [3] Variance.
+  205.39    130.00   (75.39)   ...            → pos[1]=205.39 (positive) → SKIP. The (75.39) is position [3] Variance.
+  -         250.00   250.00  3,600.00  750.00  (2,850.00)  → pos[1]=dash (zero) → SKIP. The (2,850.00) is position [6] YTD Variance.
+  (100.00)  125.00   225.00  ...             → pos[1]=(100.00) (negative) → REPORT.
 
 SKIP any account where: (a) the Budget column is in parentheses (credit budget); (b) the Variance is negative but the Actual is positive.
 Do NOT include income accounts (30xxx, 42-30xxx accounts) here.
