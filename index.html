@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v29</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v32</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -368,7 +368,7 @@ function postProcessIncomeStatement(items) {
   const zeroBudgetPattern = /N\/A|Infinite|Cannot calculate|no budget|budget is zero|budget was zero|budget not set|budget not available|no budget set/i;
 
   // Issue 3: known income account prefixes that must never appear in Section C
-  const incomeAccountPattern = /\b(30100|30450|30500|30600|30800|30820|30850)\b|42-30/;
+  const incomeAccountPattern = /\b(30[0-9]{3}-00)\b|42-30/;
 
   // Issue 2: Section A keywords that require ** bold wrapping
   const sectionAPattern = /NSF|Leasing Fee|Collection Fee/i;
@@ -404,8 +404,9 @@ function postProcessIncomeStatement(items) {
       if (/^\*\*NSF/i.test(s)        && !validNSF.test(s))        return false;
       if (/^\*\*Leasing Fee/i.test(s) && !validLeasing.test(s))    return false;
       if (/^\*\*Collection Fee/i.test(s) && !validCollection.test(s)) return false;
-      // Remove Section C items that are actually income accounts
+      // Remove Section C items that are actually income accounts (those belong in B2)
       if (/^Negative expense:/i.test(s) && incomeAccountPattern.test(s)) return false;
+      // Section B2 negative income — no minimum threshold, all amounts reported
       // Remove Section C items below $50 (likely positive-actual misreads)
       if (/^Negative expense:/i.test(s)) {
         const amtMatch = s.match(/\(\$?([\d,]+\.?\d*)\)/);
@@ -477,8 +478,20 @@ CRITICAL OUTPUT RULE: You must respond with ONLY a valid JSON object. No prose, 
 Analyze this HOA financial report package and perform the following checks:
 
 STEP 1 – BALANCE SHEET REVIEW:
-- Operating Column: Confirm Total Operating Assets = Total Operating Liabilities + Equity. Balanced → "OK". If not → report both figures and the difference.
+- Operating Column: Confirm Total Operating Assets = Total Operating Liabilities + Equity. Balanced → proceed to Low Cash check below. If not balanced → report both figures and the difference, then still perform the Low Cash check.
 - Reserve Column: Same check for reserve side. Balanced → "OK". If not → report both figures and difference.
+
+LOW CASH CHECK (for bsOperating field only):
+Find: (a) the operating cash/checking account balance from the balance sheet operating column; (b) the Total Annual Income Budget — this is the sum of all Annual Budget values for REVENUE/INCOME accounts on the income statement (the rightmost "Annual Budget" column).
+Calculate: cashRatio = operating cash balance ÷ total annual income budget
+  • cashRatio < 0.10 (less than 10% of annual income budget) → flag as "Very Low Cash ($X.XX balance, $Y.YY annual budget)"
+  • cashRatio ≥ 0.10 and < 0.20 (between 10%–20%) → flag as "Low Cash ($X.XX balance, $Y.YY annual budget)"
+  • cashRatio ≥ 0.20 → no cash flag
+Set bsOperating based on these combined rules:
+  • BS balanced AND no cash flag → "OK"
+  • BS balanced AND cash flag triggered → the cash flag string (e.g. "Low Cash ($12,345.67 balance, $180,000.00 annual budget)")
+  • BS NOT balanced AND no cash flag → the imbalance description only
+  • BS NOT balanced AND cash flag triggered → imbalance description + " | " + cash flag string
 
 STEP 2 – PRE-PAID ASSESSMENT RECONCILIATION:
 - Compare Balance Sheet "Pre-Paid Assessments" line to the total on the Pre-Paid Homeowners list.
@@ -501,6 +514,7 @@ CRITICAL: Only read these accounts from the income statement revenue rows. NEVER
 A valid income statement row looks like: "Account Name   [account#]   $X.XX   $X.XX   ($X.XX)   ..."  with multiple dollar columns.
 A transaction detail line (NOT valid) looks like: "Addendum for 4/30/2026; Leasing Management Fee - $120.00 Account - ASHLX027" — this must be IGNORED.
 - Account 30850-00 or 42-30850-00 (NSF): format as "**NSF Charges: [account] ($X.XX)**"
+  PAGE RESTRICTION: NSF fees are ONLY relevant when found on the income statement, which appears on page 3 of the report. NSF-related entries found on any other page (bank statements, transaction histories, check registers, notes pages, etc.) must be completely ignored — do not report NSF from any page other than page 3.
 - Account 30450-00 or 42-30450-00 (Leasing Fee): format as "**Leasing Fee Income: [account] ($X.XX)**"
 - Account 30800-00 or 42-30800-00 (Collection Fee): format as "**Collection Fee Income: [account] ($X.XX)**"
 These MUST be wrapped in ** ** for bold rendering. Do not include any other accounts in Section A, regardless of account name or activity type.
@@ -513,8 +527,19 @@ Only report INCOME accounts (Revenue section) where ALL of these are true:
 STRICT RULE: Skip entirely if Current Period Budget is zero or blank. Do not report "infinite variance" or "no budget set" items.
 Format: "Income variance: [account name] ([account #]) — Actual: $X.XX, Budget: $X.XX, Variance: X.X%"
 
+SECTION B2 — NEGATIVE INCOME ACTUALS:
+Report ANY INCOME account (in REVENUE or OTHER REVENUE sections) where the Current Period Actual is itself a negative number (shown in parentheses), regardless of the budget amount or dollar size.
+A negative income actual means income was reversed or refunded — this is ALWAYS noteworthy no matter the amount.
+Report ALL of them — there is NO minimum dollar threshold for this section.
+SKIP accounts already reported in Section A.
+Do NOT confuse a negative variance with a negative actual — apply the same column-position test as Section C: only position [1] (the Current Period Actual) matters.
+Examples:
+  Fine Reimbursement row: (850.00) - (850.00) 650.00 - 650.00 - → pos[1]=(850.00) negative → REPORT.
+  Pool & Gate Remotes row: (25.00) - (25.00) 25.00 - 25.00 - → pos[1]=(25.00) negative → REPORT.
+Format: "Negative income: [account name] ([account #]) ($X.XX)"
+
 SECTION C — NEGATIVE EXPENSE ACTUALS:
-Only report EXPENSE accounts where the Current Period Actual is itself a negative number (shown in parentheses in the Actual column).
+CRITICAL RULE: This section evaluates ONLY the Current Period Actual column (position [1]). The Variance column (position [3]) is NEVER used to determine if an expense is negative. An expense that is over-budget will have a negative variance but a POSITIVE actual — that must NOT be reported here. Only report EXPENSE accounts where the Current Period Actual itself (position [1]) is a negative number (shown in parentheses in the Actual column).
 
 COLUMN POSITIONS — each row has exactly 7 values in this order:
   [1] Current Period Actual  [2] Current Period Budget  [3] Current Period Variance
@@ -576,7 +601,7 @@ Respond ONLY with valid JSON, no markdown fences:
   "bsOperating": "OK or issue description",
   "bsReserve": "OK or issue description",
   "prepaid": "OK or issue description",
-  "incomeStatement": ["OK"] or ["**NSF Charges: 30850-00 ($25.00)**", "Income variance: ...", "Negative expense: ...", "Expense variance: ..."]
+  "incomeStatement": ["OK"] or ["**NSF Charges: 30850-00 ($25.00)**", "Income variance: ...", "Negative income: ...", "Negative expense: ...", "Expense variance: ..."]
 }`;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -745,6 +770,12 @@ function isOK(val) {
   if (Array.isArray(val)) return val.length === 1 && val[0].toString().toUpperCase().trim() === 'OK';
   return val.toString().toUpperCase().trim() === 'OK';
 }
+// Low Cash helpers — detect AI-flagged cash level in bsOperating field
+function isVeryLowCash(val) { return /Very Low Cash/i.test(String(val||'')); }
+function isLowCash(val) {
+  const s = String(val||'');
+  return /\bLow Cash\b/i.test(s) && !/Very Low Cash/i.test(s);
+}
 
 function renderResults(data, monthDisplay) {
   const reviewer = document.getElementById('reviewerName').value.trim();
@@ -755,17 +786,20 @@ function renderResults(data, monthDisplay) {
 
   data.forEach(a => {
     const bsOpOK = isOK(a.bsOperating), bsResOK = isOK(a.bsReserve), ppOK = isOK(a.prepaid), isOKr = isOK(a.incomeStatement);
-    const hasCrit = !bsOpOK || !bsResOK || !ppOK;
-    if (hasCrit) crit++; else if (!isOKr) warn++; else ok++;
+    // Low Cash = Warning tier; Very Low Cash or other BS issue = Critical tier
+    const bsOpLowCash = isLowCash(a.bsOperating);
+    const hasCrit = (!bsOpOK && !bsOpLowCash) || !bsResOK || !ppOK;
+    const hasWarn = bsOpLowCash || !isOKr;
+    if (hasCrit) crit++; else if (hasWarn) warn++; else ok++;
     const tr = document.createElement('tr');
-    tr.className = hasCrit ? 'row-critical' : !isOKr ? 'row-warning' : 'row-ok';
+    tr.className = hasCrit ? 'row-critical' : hasWarn ? 'row-warning' : 'row-ok';
     tr.innerHTML = `<td>${esc(a.communityName||'Unknown')}</td><td>${renderCell(a.bsOperating)}</td><td>${renderCell(a.bsReserve)}</td><td>${renderCell(a.prepaid)}</td><td>${renderISCell(a.incomeStatement)}</td>`;
     tbody.appendChild(tr);
   });
 
   document.getElementById('statsBar').innerHTML = `
-    <div class="stat-pill"><div class="stat-dot red"></div>${crit} Balance Sheet Issues</div>
-    <div class="stat-pill"><div class="stat-dot yellow"></div>${warn} Income Warnings</div>
+    <div class="stat-pill"><div class="stat-dot red"></div>${crit} Critical Issues</div>
+    <div class="stat-pill"><div class="stat-dot yellow"></div>${warn} Warnings</div>
     <div class="stat-pill"><div class="stat-dot green"></div>${ok} Fully Clear</div>
     <div class="stat-pill">${data.length} Communities</div>
   `;
@@ -776,6 +810,8 @@ function renderResults(data, monthDisplay) {
 function renderCell(val) {
   if (isOK(val)) return '<span class="cell-ok">OK</span>';
   if (String(val||'').toLowerCase().trim() === 'not provided') return `<span class="cell-dim">Not provided</span>`;
+  if (isLowCash(val)) return `<span class="cell-warn">${esc(String(val||''))}</span>`;
+  if (isVeryLowCash(val)) return `<span class="cell-issue" style="font-weight:600;">${esc(String(val||''))}</span>`;
   return `<span class="cell-issue">${esc(String(val||''))}</span>`;
 }
 function renderISCell(val) {
@@ -786,9 +822,12 @@ function renderISCell(val) {
     // Render **bold** items (Section A special items)
     const isBold = v.startsWith('**') && v.endsWith('**');
     const text = isBold ? v.slice(2, -2) : v;
+    const isNegIncome = !isBold && /^Negative income:/i.test(text);
     const style = isBold
       ? 'class="cell-warn-line" style="display:block;padding:2px 0;font-weight:600;color:var(--red);"'
-      : 'class="cell-warn-line cell-warn"';
+      : isNegIncome
+        ? 'class="cell-warn-line" style="display:block;padding:2px 0;font-weight:600;color:var(--yellow);"'
+        : 'class="cell-warn-line cell-warn"';
     return `<span ${style}>${esc(text)}</span>`;
   }).join('');
 }
@@ -840,6 +879,8 @@ document.getElementById('excelBtn').addEventListener('click', async () => {
         runs.push({ text: pre + s.replace(/\*\*/g, ''), font: { ...base, bold: true, color: { argb: DRED_TEXT } } });
       } else if (/^Negative expense:/i.test(s)) {
         runs.push({ text: pre + s, font: { ...base, bold: true, color: { argb: RED_TEXT } } });
+      } else if (/^Negative income:/i.test(s)) {
+        runs.push({ text: pre + s, font: { ...base, bold: true, color: { argb: ORG_TEXT } } });
       } else if (/^Income variance:/i.test(s)) {
         runs.push({ text: pre + s, font: { ...base, bold: true, color: { argb: ORG_TEXT } } });
       } else if (/^Expense variance:/i.test(s)) {
@@ -894,7 +935,9 @@ document.getElementById('excelBtn').addEventListener('click', async () => {
   globalResults.forEach(a => {
     const bsOpOK = isOK(a.bsOperating), bsResOK = isOK(a.bsReserve),
           ppOK   = isOK(a.prepaid),      isOKr   = isOK(a.incomeStatement);
-    const status = (!bsOpOK || !bsResOK || !ppOK) ? 'CRITICAL' : !isOKr ? 'WARNING' : 'OK';
+    const bsOpLowCash = isLowCash(a.bsOperating);
+    const hasCritExcel = (!bsOpOK && !bsOpLowCash) || !bsResOK || !ppOK;
+    const status = hasCritExcel ? 'CRITICAL' : (bsOpLowCash || !isOKr) ? 'WARNING' : 'OK';
     const sc = statusColors(status);
 
     const dr = ws.addRow([
@@ -915,9 +958,13 @@ document.getElementById('excelBtn').addEventListener('click', async () => {
     [2, 3, 4].forEach(col => {
       const cell  = dr.getCell(col);
       const colOK = col === 2 ? bsOpOK : col === 3 ? bsResOK : ppOK;
-      cell.font      = { name: 'Arial', size: 10,
-                         bold: colOK, color: { argb: colOK ? OK_FONT : BLACK } };
-      cell.fill      = colOK ? { type: 'pattern', pattern: 'solid', fgColor: { argb: OK_FILL } } : undefined;
+      // Column 2 (BS Operating): special handling for Low Cash / Very Low Cash
+      let fontColor = colOK ? OK_FONT : BLACK;
+      let fillColor = colOK ? OK_FILL : null;
+      if (col === 2 && bsOpLowCash)          { fontColor = WARN_FONT; fillColor = WARN_FILL; }
+      if (col === 2 && isVeryLowCash(a.bsOperating)) { fontColor = CRIT_FONT; fillColor = CRIT_FILL; }
+      cell.font      = { name: 'Arial', size: 10, bold: colOK || bsOpLowCash, color: { argb: fontColor } };
+      cell.fill      = fillColor ? { type: 'pattern', pattern: 'solid', fgColor: { argb: fillColor } } : undefined;
       cell.alignment = { horizontal: 'center', vertical: 'top', wrapText: true };
     });
 
