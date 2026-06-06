@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v33</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v34</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -480,20 +480,14 @@ CRITICAL OUTPUT RULE: You must respond with ONLY a valid JSON object. No prose, 
 Analyze this HOA financial report package and perform the following checks:
 
 STEP 1 – BALANCE SHEET REVIEW:
-- Operating Column: Confirm Total Operating Assets = Total Operating Liabilities + Equity. Balanced → proceed to Low Cash check below. If not balanced → report both figures and the difference, then still perform the Low Cash check.
+- Operating Column: Confirm Total Operating Assets = Total Operating Liabilities + Equity. Balanced → "OK". If not → report both figures and the difference.
 - Reserve Column: Same check for reserve side. Balanced → "OK". If not → report both figures and difference.
 
-LOW CASH CHECK (for bsOperating field only):
-Find: (a) the operating cash/checking account balance from the balance sheet operating column; (b) the Total Annual Income Budget — use the Total Operating Income line in the "Annual Budget" (rightmost) column of the income statement.
-Calculate: cashRatio = operating cash balance ÷ total annual income budget
-  • cashRatio < 0.10 (less than 10% of annual income budget) → flag as "Very Low Cash ($X.XX balance, $Y.YY annual budget)"
-  • cashRatio ≥ 0.10 and < 0.20 (between 10%–20%) → flag as "Low Cash ($X.XX balance, $Y.YY annual budget)"
-  • cashRatio ≥ 0.20 → no cash flag
-Set bsOperating based on these combined rules:
-  • BS balanced AND no cash flag → "OK"
-  • BS balanced AND cash flag triggered → the cash flag string (e.g. "Low Cash ($12,345.67 balance, $180,000.00 annual budget)")
-  • BS NOT balanced AND no cash flag → the imbalance description only
-  • BS NOT balanced AND cash flag triggered → imbalance description + " | " + cash flag string
+CASH EXTRACTION (report as separate fields, do NOT factor into bsOperating):
+Extract these two numbers and report them in the JSON as cashBalance and annualIncomeBudget:
+- cashBalance: the main operating checking/cash account balance from the balance sheet operating column (look for a line labeled "Cash", "Checking", or a specific bank account name in the Assets section). Report as a plain number, no $ or commas (e.g. 37908.84).
+- annualIncomeBudget: find the "Total Operating Income" subtotal row on the income statement. Report the value from the rightmost column ONLY — this is the 7th column, the Annual Budget column. Count carefully: the columns are [1] Current Period Actual, [2] Current Period Budget, [3] Variance, [4] YTD Actual, [5] YTD Budget, [6] YTD Variance, [7] Annual Budget. Many income rows show a dash (–) in columns [2] and [3]; do not let that shift your column count. The Annual Budget (column 7) is always the rightmost number on the row. Report as a plain number, no $ or commas (e.g. 111000.00).
+If either value cannot be found, report null for that field.
 
 STEP 2 – PRE-PAID ASSESSMENT RECONCILIATION:
 - Compare Balance Sheet "Pre-Paid Assessments" line to the total on the Pre-Paid Homeowners list.
@@ -604,6 +598,8 @@ Respond ONLY with valid JSON, no markdown fences:
   "bsOperating": "OK or issue description",
   "bsReserve": "OK or issue description",
   "prepaid": "OK or issue description",
+  "cashBalance": 37908.84,
+  "annualIncomeBudget": 111000.00,
   "incomeStatement": ["OK"] or ["**NSF Charges: 30850-00 ($25.00)**", "Income variance: ...", "Negative income: ...", "Negative expense: ...", "Expense variance: ..."]
 }`;
 
@@ -640,6 +636,27 @@ Respond ONLY with valid JSON, no markdown fences:
   if (Array.isArray(parsed.incomeStatement)) {
     parsed.incomeStatement = postProcessIncomeStatement(parsed.incomeStatement);
   }
+
+  // Low Cash check — computed in JS from AI-extracted raw numbers to avoid AI column-reading errors
+  const cashBal  = typeof parsed.cashBalance === 'number' ? parsed.cashBalance : null;
+  const annualBdg = typeof parsed.annualIncomeBudget === 'number' ? parsed.annualIncomeBudget : null;
+  if (cashBal !== null && annualBdg !== null && annualBdg > 0) {
+    const ratio = cashBal / annualBdg;
+    const fmt = n => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const cashFlag = ratio < 0.10
+      ? `Very Low Cash (${fmt(cashBal)} balance, ${fmt(annualBdg)} annual budget)`
+      : ratio < 0.20
+        ? `Low Cash (${fmt(cashBal)} balance, ${fmt(annualBdg)} annual budget)`
+        : null;
+    if (cashFlag) {
+      parsed.bsOperating = isOK(parsed.bsOperating)
+        ? cashFlag
+        : parsed.bsOperating + ' | ' + cashFlag;
+    }
+  }
+  delete parsed.cashBalance;
+  delete parsed.annualIncomeBudget;
+
   parsed.__pageCount = pageCount;
   parsed.__truncated = truncated;
   return parsed;
