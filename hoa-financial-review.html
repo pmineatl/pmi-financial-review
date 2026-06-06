@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v35</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v36</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -515,6 +515,7 @@ A transaction detail line (NOT valid) looks like: "Addendum for 4/30/2026; Leasi
 - Account 30450-00 or 42-30450-00 (Leasing Fee): format as "**Leasing Fee Income: [account] ($X.XX)**"
 - Account 30800-00 or 42-30800-00 (Collection Fee): format as "**Collection Fee Income: [account] ($X.XX)**"
 - Account 30700-00 or 42-30700-00 (Pool & Gate Remotes): format as "**Pool & Gate Remotes: [account] ($X.XX)**"
+  SOURCE RESTRICTION: Pool & Gate Remotes are ONLY relevant when account 30700-00 appears as a line item in the INCOME STATEMENT revenue rows with a non-zero Current Period Actual (column [1]). Never report this account if it appears anywhere else in the document — not on cash disbursement pages, expense sections, vendor invoices, transaction histories, or any page other than the income statement. Use ONLY the Current Period Actual column value; do not report based on any other column.
 These MUST be wrapped in ** ** for bold rendering. Do not include any other accounts in Section A, regardless of account name or activity type.
 
 SECTION B — NOTABLE INCOME VARIANCES:
