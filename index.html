@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v34</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v35</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -189,7 +189,8 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
       </table>
     </div>
     <div class="action-bar">
-      <button class="btn-sec btn-excel" id="excelBtn">⬇ Export to Excel</button>
+      <button class="btn-sec btn-excel" id="accountingBtn">⬇ Accounting Report</button>
+      <button class="btn-sec btn-excel" id="managerBtn">⬇ Manager Report</button>
       <button class="btn-sec" id="printBtn">🖨 Print / Save PDF</button>
       <button class="btn-sec" id="resetBtn">↩ New Review</button>
     </div>
@@ -855,14 +856,28 @@ function esc(str) { const d=document.createElement('div'); d.appendChild(documen
 function showError(msg) { const b=document.getElementById('errorBox'); b.textContent=msg; b.classList.add('visible'); }
 function hideError() { document.getElementById('errorBox').classList.remove('visible'); }
 
-// Excel Export
-document.getElementById('excelBtn').addEventListener('click', async () => {
+// Split income statement items into Section A (bold) vs Manager (B/B2/C/D)
+function getSectionAItems(items) {
+  if (isOK(items)) return ['OK'];
+  if (!Array.isArray(items)) return ['OK'];
+  const filtered = items.filter(v => { const s = String(v); return s.startsWith('**') && s.endsWith('**'); });
+  return filtered.length ? filtered : ['OK'];
+}
+function getManagerItems(items) {
+  if (isOK(items)) return ['OK'];
+  if (!Array.isArray(items)) return [String(items)];
+  const filtered = items.filter(v => { const s = String(v); return !(s.startsWith('**') && s.endsWith('**')) && s.toUpperCase().trim() !== 'OK'; });
+  return filtered.length ? filtered : ['OK'];
+}
+
+// Excel Export — shared builder
+async function buildExcelWorkbook(reportType) {
   if (!globalResults.length) return;
   const reviewer = document.getElementById('reviewerName').value.trim();
-  const month = document.getElementById('reportMonth').value || 'report';
+  const month    = document.getElementById('reportMonth').value || 'report';
   const workbook = new ExcelJS.Workbook();
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
+  // ── Shared helpers ────────────────────────────────────────────────────────
   const NAVY   = 'FF1A2E4A';
   const DGRAY  = 'FF2C3E50';
   const LTBG   = 'FFF0F4F8';
@@ -875,202 +890,179 @@ document.getElementById('excelBtn').addEventListener('click', async () => {
   const ORG_TEXT  = 'FFCC6600';
   const DRED_TEXT = 'FF8B0000';
 
-  function hdrCell(cell) {
-    cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: WHITE } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DGRAY } };
+  const hdrCell = cell => {
+    cell.font      = { name: 'Arial', size: 10, bold: true, color: { argb: WHITE } };
+    cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: DGRAY } };
     cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-  }
+  };
+  const statusColors = s => s === 'OK' ? { fill: OK_FILL, font: OK_FONT } : s === 'CRITICAL' ? { fill: CRIT_FILL, font: CRIT_FONT } : { fill: WARN_FILL, font: WARN_FONT };
 
-  function statusColors(status) {
-    if (status === 'OK')       return { fill: OK_FILL,   font: OK_FONT };
-    if (status === 'CRITICAL') return { fill: CRIT_FILL, font: CRIT_FONT };
-    return                            { fill: WARN_FILL, font: WARN_FONT };
-  }
-
-  // Build rich-text runs for Income Statement cell
   function buildISRichText(items) {
     const arr = Array.isArray(items) ? items : [String(items || '')];
     const runs = [];
     arr.forEach((item, idx) => {
-      const s   = String(item);
-      const pre = idx === 0 ? '' : '\n';
-      const base = { name: 'Arial', size: 10 };
-      if (/NSF|Leasing Fee|Collection Fee|Pool & Gate Remotes/i.test(s)) {
+      const s = String(item), pre = idx === 0 ? '' : '\n', base = { name: 'Arial', size: 10 };
+      if (/NSF|Leasing Fee|Collection Fee|Pool & Gate Remotes/i.test(s))
         runs.push({ text: pre + s.replace(/\*\*/g, ''), font: { ...base, bold: true, color: { argb: DRED_TEXT } } });
-      } else if (/^Negative expense:/i.test(s)) {
+      else if (/^Negative expense:/i.test(s))
         runs.push({ text: pre + s, font: { ...base, bold: true, color: { argb: RED_TEXT } } });
-      } else if (/^Negative income:/i.test(s)) {
+      else if (/^Negative income:/i.test(s) || /^Income variance:/i.test(s))
         runs.push({ text: pre + s, font: { ...base, bold: true, color: { argb: ORG_TEXT } } });
-      } else if (/^Income variance:/i.test(s)) {
-        runs.push({ text: pre + s, font: { ...base, bold: true, color: { argb: ORG_TEXT } } });
-      } else if (/^Expense variance:/i.test(s)) {
-        // Red if actual > budget (over-budget), black if actual <= budget (under-budget)
-        const actualMatch = s.match(/Actual:\s*\$?([\d,]+\.?\d*)/i);
-        const budgetMatch = s.match(/Budget:\s*\$?([\d,]+\.?\d*)/i);
-        const overBudget  = actualMatch && budgetMatch &&
-          parseFloat(actualMatch[1].replace(/,/g, '')) > parseFloat(budgetMatch[1].replace(/,/g, ''));
-        runs.push({ text: pre + s, font: { ...base, color: { argb: overBudget ? RED_TEXT : BLACK } } });
-      } else {
+      else if (/^Expense variance:/i.test(s)) {
+        const am = s.match(/Actual:\s*\$?([\d,]+\.?\d*)/i), bm = s.match(/Budget:\s*\$?([\d,]+\.?\d*)/i);
+        const over = am && bm && parseFloat(am[1].replace(/,/g,'')) > parseFloat(bm[1].replace(/,/g,''));
+        runs.push({ text: pre + s, font: { ...base, color: { argb: over ? RED_TEXT : BLACK } } });
+      } else
         runs.push({ text: pre + s, font: { ...base, color: { argb: BLACK } } });
-      }
     });
     return runs.length ? { richText: runs } : '';
   }
 
-  // ── Financial Review sheet ───────────────────────────────────────────────
-  const ws = workbook.addWorksheet('Financial Review');
-  ws.columns = [
-    { width: 38 }, { width: 30 }, { width: 30 },
-    { width: 30 }, { width: 68 }, { width: 13 }
-  ];
-
-  // Title
-  const r1 = ws.addRow(['PMI Northeast Atlanta — HOA Financial Review','','','','','']);
-  ws.mergeCells(r1.number, 1, r1.number, 6);
-  r1.height = 22;
-  Object.assign(r1.getCell(1), {
-    font: { name: 'Arial', size: 13, bold: true, color: { argb: WHITE } },
-    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: NAVY } },
-    alignment: { horizontal: 'left', vertical: 'middle' }
-  });
-
-  // Subtitle
-  const r2 = ws.addRow([`Period: ${globalMonth}${reviewer ? '   |   Reviewer: ' + reviewer : ''}   |   Generated: ${new Date().toLocaleDateString('en-US')}`, '','','','','']);
-  ws.mergeCells(r2.number, 1, r2.number, 6);
-  r2.height = 16;
-  Object.assign(r2.getCell(1), {
-    font: { name: 'Arial', size: 10, color: { argb: 'FF444444' } },
-    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: LTBG } },
-    alignment: { horizontal: 'left', vertical: 'middle' }
-  });
-
-  ws.addRow([]); // blank
-
-  // Header
-  const rh = ws.addRow(['Community', 'BS Operating', 'BS Reserve', 'Pre-Paid Reconciliation', 'Income Statement Review', 'Status']);
-  rh.height = 18;
-  rh.eachCell(cell => hdrCell(cell));
-
-  // Data rows
-  globalResults.forEach(a => {
-    const bsOpOK = isOK(a.bsOperating), bsResOK = isOK(a.bsReserve),
-          ppOK   = isOK(a.prepaid),      isOKr   = isOK(a.incomeStatement);
-    const bsOpLowCash = isLowCash(a.bsOperating);
-    const hasCritExcel = (!bsOpOK && !bsOpLowCash) || !bsResOK || !ppOK;
-    const status = hasCritExcel ? 'CRITICAL' : (bsOpLowCash || !isOKr) ? 'WARNING' : 'OK';
-    const sc = statusColors(status);
-
-    const dr = ws.addRow([
-      a.communityName || 'Unknown',
-      bsOpOK   ? 'OK' : String(a.bsOperating || ''),
-      bsResOK  ? 'OK' : String(a.bsReserve   || ''),
-      ppOK     ? 'OK' : String(a.prepaid      || ''),
-      '',    // set below as rich text
-      status
-    ]);
-    dr.height = 80;
-
-    // Community
-    dr.getCell(1).font      = { name: 'Arial', size: 10, bold: true };
-    dr.getCell(1).alignment = { vertical: 'top', wrapText: true };
-
-    // BS columns
-    [2, 3, 4].forEach(col => {
-      const cell  = dr.getCell(col);
-      const colOK = col === 2 ? bsOpOK : col === 3 ? bsResOK : ppOK;
-      // Column 2 (BS Operating): special handling for Low Cash / Very Low Cash
-      let fontColor = colOK ? OK_FONT : BLACK;
-      let fillColor = colOK ? OK_FILL : null;
-      if (col === 2 && bsOpLowCash)          { fontColor = WARN_FONT; fillColor = WARN_FILL; }
-      if (col === 2 && isVeryLowCash(a.bsOperating)) { fontColor = CRIT_FONT; fillColor = CRIT_FILL; }
-      cell.font      = { name: 'Arial', size: 10, bold: colOK || bsOpLowCash, color: { argb: fontColor } };
-      cell.fill      = fillColor ? { type: 'pattern', pattern: 'solid', fgColor: { argb: fillColor } } : undefined;
-      cell.alignment = { horizontal: 'center', vertical: 'top', wrapText: true };
-    });
-
-    // Income Statement — rich text
-    const isCell = dr.getCell(5);
-    isCell.value     = buildISRichText(a.incomeStatement);
-    isCell.alignment = { vertical: 'top', wrapText: true };
-
-    // Status
-    const stCell = dr.getCell(6);
-    stCell.font      = { name: 'Arial', size: 10, bold: true, color: { argb: sc.font } };
-    stCell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: sc.fill } };
-    stCell.alignment = { horizontal: 'center', vertical: 'top' };
-  });
-
-  // ── Performance Log sheet ────────────────────────────────────────────────
-  if (perfLog.length > 0) {
-    const ws2 = workbook.addWorksheet('Performance Log');
-    ws2.columns = [
-      { width: 42 }, { width: 15 }, { width: 13 }, { width: 15 },
-      { width: 13 }, { width: 17 }, { width: 11 }, { width: 17 },
-      { width: 25 }, { width: 21 }
-    ];
-    const summary = perfLog.batchSummary || {};
-
-    const p1 = ws2.addRow(['PMI Northeast Atlanta — Performance Log', ...Array(9).fill('')]);
-    ws2.mergeCells(p1.number, 1, p1.number, 10);
-    p1.height = 22;
-    Object.assign(p1.getCell(1), {
+  function addTitleRows(ws, title, colCount) {
+    const r1 = ws.addRow([title, ...Array(colCount - 1).fill('')]);
+    ws.mergeCells(r1.number, 1, r1.number, colCount);
+    r1.height = 22;
+    Object.assign(r1.getCell(1), {
       font: { name: 'Arial', size: 13, bold: true, color: { argb: WHITE } },
       fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: NAVY } },
       alignment: { horizontal: 'left', vertical: 'middle' }
     });
-
-    [[`Run Date: ${summary.runDate || ''}   |   Run Time: ${summary.runTime || ''}   |   Pause tiers Tier 2 (by analysis duration): <15s=5s, 15-45s=8s, 45-90s=20s, >90s=30s | Max retries: 3`],
-     [`Total Files: ${summary.totalFiles || perfLog.length}   |   Total Duration: ${summary.totalDurationSecs || ''}s   |   Total Rate Limit Hits: ${summary.totalRateLimitHits || 0}`]
-    ].forEach(rowData => {
-      const pr = ws2.addRow([...rowData, ...Array(9).fill('')]);
-      ws2.mergeCells(pr.number, 1, pr.number, 10);
-      pr.height = 16;
-      Object.assign(pr.getCell(1), {
-        font: { name: 'Arial', size: 10, color: { argb: 'FF444444' } },
-        fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: LTBG } },
-        alignment: { horizontal: 'left', vertical: 'middle' }
-      });
+    const r2 = ws.addRow([`Period: ${globalMonth}${reviewer ? '   |   Reviewer: ' + reviewer : ''}   |   Generated: ${new Date().toLocaleDateString('en-US')}`, ...Array(colCount - 1).fill('')]);
+    ws.mergeCells(r2.number, 1, r2.number, colCount);
+    r2.height = 16;
+    Object.assign(r2.getCell(1), {
+      font: { name: 'Arial', size: 10, color: { argb: 'FF444444' } },
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: LTBG } },
+      alignment: { horizontal: 'left', vertical: 'middle' }
     });
+    ws.addRow([]);
+  }
 
-    ws2.addRow([]);
+  // ── ACCOUNTING REPORT sheet ───────────────────────────────────────────────
+  if (reportType === 'accounting') {
+    const ws = workbook.addWorksheet('Accounting Review');
+    ws.columns = [{ width: 38 }, { width: 30 }, { width: 30 }, { width: 30 }, { width: 50 }, { width: 13 }];
+    addTitleRows(ws, 'PMI Northeast Atlanta — Accounting Review', 6);
 
-    const ph = ws2.addRow(['File Name','File Size (KB)','Page Count','Truncated to 99','Start Time','Duration (secs)','Attempts','Rate Limit Hits','Between-File Pause (secs)','Outcome']);
-    ph.height = 18;
-    ph.eachCell(cell => hdrCell(cell));
+    const rh = ws.addRow(['Community', 'BS Operating', 'BS Reserve', 'Pre-Paid Reconciliation', 'Section A — Special Income Items', 'Status']);
+    rh.height = 18; rh.eachCell(cell => hdrCell(cell));
 
-    perfLog.forEach(r => {
-      const pr = ws2.addRow([
-        r.fileName, r.fileSizeKB, r.pageCount || 'unknown', r.truncated ? 'YES' : 'no',
-        r.startTime, r.durationSecs, r.attempts, r.rateLimitHits, r.betweenFilePauseSecs, r.outcome
+    globalResults.forEach(a => {
+      const bsOpOK = isOK(a.bsOperating), bsResOK = isOK(a.bsReserve), ppOK = isOK(a.prepaid);
+      const bsOpLC = isLowCash(a.bsOperating);
+      const secA   = getSectionAItems(a.incomeStatement);
+      const secAOK = isOK(secA);
+      const hasCrit = (!bsOpOK && !bsOpLC) || !bsResOK || !ppOK;
+      const status  = hasCrit ? 'CRITICAL' : (bsOpLC || !secAOK) ? 'WARNING' : 'OK';
+      const sc = statusColors(status);
+
+      const dr = ws.addRow([
+        a.communityName || 'Unknown',
+        bsOpOK ? 'OK' : String(a.bsOperating || ''),
+        bsResOK ? 'OK' : String(a.bsReserve || ''),
+        ppOK ? 'OK' : String(a.prepaid || ''),
+        '', status
       ]);
-      pr.eachCell((cell, col) => {
-        cell.font      = { name: 'Arial', size: 10 };
-        if (col > 1) cell.alignment = { horizontal: 'center' };
+      dr.height = 60;
+      dr.getCell(1).font      = { name: 'Arial', size: 10, bold: true };
+      dr.getCell(1).alignment = { vertical: 'top', wrapText: true };
+
+      [2, 3, 4].forEach(col => {
+        const cell = dr.getCell(col);
+        const colOK = col === 2 ? bsOpOK : col === 3 ? bsResOK : ppOK;
+        let fontColor = colOK ? OK_FONT : BLACK, fillColor = colOK ? OK_FILL : null;
+        if (col === 2 && bsOpLC)                    { fontColor = WARN_FONT; fillColor = WARN_FILL; }
+        if (col === 2 && isVeryLowCash(a.bsOperating)) { fontColor = CRIT_FONT; fillColor = CRIT_FILL; }
+        cell.font      = { name: 'Arial', size: 10, bold: colOK || bsOpLC, color: { argb: fontColor } };
+        cell.fill      = fillColor ? { type: 'pattern', pattern: 'solid', fgColor: { argb: fillColor } } : undefined;
+        cell.alignment = { horizontal: 'center', vertical: 'top', wrapText: true };
       });
-      const oc = pr.getCell(10);
-      if (r.outcome === 'success') oc.font = { name: 'Arial', size: 10, color: { argb: OK_FONT } };
-      else if (r.outcome !== 'success') oc.font = { name: 'Arial', size: 10, color: { argb: CRIT_FONT } };
+
+      const isCell = dr.getCell(5);
+      isCell.value     = buildISRichText(secA);
+      isCell.alignment = { vertical: 'top', wrapText: true };
+
+      const stCell = dr.getCell(6);
+      stCell.font      = { name: 'Arial', size: 10, bold: true, color: { argb: sc.font } };
+      stCell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: sc.fill } };
+      stCell.alignment = { horizontal: 'center', vertical: 'top' };
     });
 
-    const lastRow = 5 + perfLog.length;
-    const tot = ws2.addRow(['TOTALS','','','','',
-      { formula: `SUM(F6:F${lastRow})` }, '',
-      { formula: `SUM(H6:H${lastRow})` }, '', '']);
-    tot.eachCell(cell => {
-      cell.font = { name: 'Arial', size: 10, bold: true };
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: LTBG } };
+    // Performance Log
+    if (perfLog.length > 0) {
+      const ws2 = workbook.addWorksheet('Performance Log');
+      ws2.columns = [{ width: 42 }, { width: 15 }, { width: 13 }, { width: 15 }, { width: 13 }, { width: 17 }, { width: 11 }, { width: 17 }, { width: 25 }, { width: 21 }];
+      const summary = perfLog.batchSummary || {};
+      const p1 = ws2.addRow(['PMI Northeast Atlanta — Performance Log', ...Array(9).fill('')]);
+      ws2.mergeCells(p1.number, 1, p1.number, 10); p1.height = 22;
+      Object.assign(p1.getCell(1), { font: { name: 'Arial', size: 13, bold: true, color: { argb: WHITE } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: NAVY } }, alignment: { horizontal: 'left', vertical: 'middle' } });
+      [[`Run Date: ${summary.runDate || ''}   |   Run Time: ${summary.runTime || ''}   |   Max retries: 3`],
+       [`Total Files: ${summary.totalFiles || perfLog.length}   |   Total Duration: ${summary.totalDurationSecs || ''}s   |   Total Rate Limit Hits: ${summary.totalRateLimitHits || 0}`]
+      ].forEach(rowData => {
+        const pr = ws2.addRow([...rowData, ...Array(9).fill('')]); ws2.mergeCells(pr.number, 1, pr.number, 10); pr.height = 16;
+        Object.assign(pr.getCell(1), { font: { name: 'Arial', size: 10, color: { argb: 'FF444444' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: LTBG } }, alignment: { horizontal: 'left', vertical: 'middle' } });
+      });
+      ws2.addRow([]);
+      const ph = ws2.addRow(['File Name','File Size (KB)','Page Count','Truncated to 99','Start Time','Duration (secs)','Attempts','Rate Limit Hits','Between-File Pause (secs)','Outcome']);
+      ph.height = 18; ph.eachCell(cell => hdrCell(cell));
+      perfLog.forEach(r => {
+        const pr = ws2.addRow([r.fileName, r.fileSizeKB, r.pageCount || 'unknown', r.truncated ? 'YES' : 'no', r.startTime, r.durationSecs, r.attempts, r.rateLimitHits, r.betweenFilePauseSecs, r.outcome]);
+        pr.eachCell((cell, col) => { cell.font = { name: 'Arial', size: 10 }; if (col > 1) cell.alignment = { horizontal: 'center' }; });
+        const oc = pr.getCell(10);
+        oc.font = { name: 'Arial', size: 10, color: { argb: r.outcome === 'success' ? OK_FONT : CRIT_FONT } };
+      });
+      const lastRow = 5 + perfLog.length;
+      const tot = ws2.addRow(['TOTALS','','','','', { formula: `SUM(F6:F${lastRow})` }, '', { formula: `SUM(H6:H${lastRow})` }, '', '']);
+      tot.eachCell(cell => { cell.font = { name: 'Arial', size: 10, bold: true }; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: LTBG } }; });
+    }
+  }
+
+  // ── MANAGER REPORT sheet ─────────────────────────────────────────────────
+  if (reportType === 'manager') {
+    const ws = workbook.addWorksheet('Manager Review');
+    ws.columns = [{ width: 38 }, { width: 80 }, { width: 13 }];
+    addTitleRows(ws, 'PMI Northeast Atlanta — Manager Review', 3);
+
+    const rh = ws.addRow(['Community', 'Income Statement Findings', 'Status']);
+    rh.height = 18; rh.eachCell(cell => hdrCell(cell));
+
+    globalResults.forEach(a => {
+      const mgr    = getManagerItems(a.incomeStatement);
+      const mgrOK  = isOK(mgr);
+      const status = mgrOK ? 'OK' : 'WARNING';
+      const sc     = statusColors(status);
+
+      const dr = ws.addRow([a.communityName || 'Unknown', '', status]);
+      dr.height = 80;
+      dr.getCell(1).font      = { name: 'Arial', size: 10, bold: true };
+      dr.getCell(1).alignment = { vertical: 'top', wrapText: true };
+
+      const isCell = dr.getCell(2);
+      isCell.value     = buildISRichText(mgr);
+      isCell.alignment = { vertical: 'top', wrapText: true };
+
+      const stCell = dr.getCell(3);
+      stCell.font      = { name: 'Arial', size: 10, bold: true, color: { argb: sc.font } };
+      stCell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: sc.fill } };
+      stCell.alignment = { horizontal: 'center', vertical: 'top' };
     });
   }
 
   // ── Download ─────────────────────────────────────────────────────────────
-  const buffer = await workbook.xlsx.writeBuffer();
-  const blob   = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const url    = URL.createObjectURL(blob);
-  const a      = document.createElement('a');
-  a.href = url; a.download = `HOA_Financial_Review_${month}.xlsx`;
-  a.click();
+  const buffer   = await workbook.xlsx.writeBuffer();
+  const blob     = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url      = URL.createObjectURL(blob);
+  const dlLink   = document.createElement('a');
+  dlLink.href    = url;
+  dlLink.download = reportType === 'accounting'
+    ? `HOA_Accounting_Review_${month}.xlsx`
+    : `HOA_Manager_Review_${month}.xlsx`;
+  dlLink.click();
   URL.revokeObjectURL(url);
-});
+}
+
+document.getElementById('accountingBtn').addEventListener('click', () => buildExcelWorkbook('accounting'));
+document.getElementById('managerBtn').addEventListener('click',    () => buildExcelWorkbook('manager'));
 
 document.getElementById('printBtn').addEventListener('click', () => window.print());
 document.getElementById('resetBtn').addEventListener('click', () => {
