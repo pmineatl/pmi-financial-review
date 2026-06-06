@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v32</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v33</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -371,7 +371,7 @@ function postProcessIncomeStatement(items) {
   const incomeAccountPattern = /\b(30[0-9]{3}-00)\b|42-30/;
 
   // Issue 2: Section A keywords that require ** bold wrapping
-  const sectionAPattern = /NSF|Leasing Fee|Collection Fee/i;
+  const sectionAPattern = /NSF|Leasing Fee|Collection Fee|Pool & Gate Remotes/i;
 
   // Build set of account numbers that appear in Section D (positive actuals confirmed)
   const sectionDAccounts = new Set(
@@ -394,6 +394,7 @@ function postProcessIncomeStatement(items) {
   const validNSF        = /\b(42-)?30850-00\b/;
   const validLeasing    = /\b(42-)?30450-00\b/;
   const validCollection = /\b(42-)?30800-00\b/;
+  const validPool       = /\b(42-)?30700-00\b/;
 
   const processed = items
     .filter(item => {
@@ -401,9 +402,10 @@ function postProcessIncomeStatement(items) {
       // Remove any item containing zero-budget noise
       if (zeroBudgetPattern.test(s)) return false;
       // Enforce Section A account-number rules — drop bold items with wrong account numbers
-      if (/^\*\*NSF/i.test(s)        && !validNSF.test(s))        return false;
-      if (/^\*\*Leasing Fee/i.test(s) && !validLeasing.test(s))    return false;
-      if (/^\*\*Collection Fee/i.test(s) && !validCollection.test(s)) return false;
+      if (/^\*\*NSF/i.test(s)             && !validNSF.test(s))        return false;
+      if (/^\*\*Leasing Fee/i.test(s)     && !validLeasing.test(s))    return false;
+      if (/^\*\*Collection Fee/i.test(s)  && !validCollection.test(s)) return false;
+      if (/^\*\*Pool & Gate Remotes/i.test(s) && !validPool.test(s))   return false;
       // Remove Section C items that are actually income accounts (those belong in B2)
       if (/^Negative expense:/i.test(s) && incomeAccountPattern.test(s)) return false;
       // Section B2 negative income — no minimum threshold, all amounts reported
@@ -482,7 +484,7 @@ STEP 1 – BALANCE SHEET REVIEW:
 - Reserve Column: Same check for reserve side. Balanced → "OK". If not → report both figures and difference.
 
 LOW CASH CHECK (for bsOperating field only):
-Find: (a) the operating cash/checking account balance from the balance sheet operating column; (b) the Total Annual Income Budget — this is the sum of all Annual Budget values for REVENUE/INCOME accounts on the income statement (the rightmost "Annual Budget" column).
+Find: (a) the operating cash/checking account balance from the balance sheet operating column; (b) the Total Annual Income Budget — use the Total Operating Income line in the "Annual Budget" (rightmost) column of the income statement.
 Calculate: cashRatio = operating cash balance ÷ total annual income budget
   • cashRatio < 0.10 (less than 10% of annual income budget) → flag as "Very Low Cash ($X.XX balance, $Y.YY annual budget)"
   • cashRatio ≥ 0.10 and < 0.20 (between 10%–20%) → flag as "Low Cash ($X.XX balance, $Y.YY annual budget)"
@@ -500,12 +502,12 @@ STEP 2 – PRE-PAID ASSESSMENT RECONCILIATION:
 STEP 3 – INCOME STATEMENT REVIEW:
 Use ONLY the CURRENT PERIOD ACTUAL column (the first column of numbers). Never use variance, year-to-date, or budget columns to determine whether a value is negative.
 
-Before classifying any account, determine whether it is an INCOME account or an EXPENSE account based on its section heading in the income statement. Income accounts appear under headings like REVENUE, OTHER REVENUE, OPERATING INCOME. Expense accounts appear under headings like GENERAL/ADMINISTRATIVE, UTILITIES, LANDSCAPE, AMENITY EXPENSES, BUILDING MAINTENANCE, RESERVE EXPENSES, OPERATING EXPENSE.
+Before classifying any account, determine whether it is an INCOME account or an EXPENSE account based on its section heading in the income statement. Income accounts appear under headings like REVENUE, OTHER REVENUE, OPERATING INCOME. Expense accounts appear under headings like GENERAL/ADMINISTRATIVE, UTILITIES, LANDSCAPE, AMENITY EXPENSES, BUILDING MAINTENANCE, RESERVE EXPENSES, OPERATING EXPENSE, TOWNHOME EXPENSES, SINGLE FAMILY EXPENSES, ENTRANCE EXPENSES, SHARED AMENITY EXPENSES, SHARED EXPENSES.
 
 Produce findings in this exact order. Each finding is a separate string in the JSON array.
 
 SECTION A — SPECIAL INCOME ITEMS (always list these first):
-Report ONLY these three account numbers if they appear as a line item in the INCOME STATEMENT (Revenue/Income section) with a non-zero Current Period Actual value.
+Report ONLY these four account numbers if they appear as a line item in the INCOME STATEMENT (Revenue/Income section) with a non-zero Current Period Actual value.
 CRITICAL: Only read these accounts from the income statement revenue rows. NEVER report them if the account number appears anywhere else in the document, including:
   • Invoice line items or addenda (lines containing "Addendum", "Invoice:", "Leasing Management Fee - $", or unit/owner account codes like "Account - XXXNNN")
   • AR aging reports or homeowner ledger details
@@ -517,6 +519,7 @@ A transaction detail line (NOT valid) looks like: "Addendum for 4/30/2026; Leasi
   PAGE RESTRICTION: NSF fees are ONLY relevant when found on the income statement, which appears on page 3 of the report. NSF-related entries found on any other page (bank statements, transaction histories, check registers, notes pages, etc.) must be completely ignored — do not report NSF from any page other than page 3.
 - Account 30450-00 or 42-30450-00 (Leasing Fee): format as "**Leasing Fee Income: [account] ($X.XX)**"
 - Account 30800-00 or 42-30800-00 (Collection Fee): format as "**Collection Fee Income: [account] ($X.XX)**"
+- Account 30700-00 or 42-30700-00 (Pool & Gate Remotes): format as "**Pool & Gate Remotes: [account] ($X.XX)**"
 These MUST be wrapped in ** ** for bold rendering. Do not include any other accounts in Section A, regardless of account name or activity type.
 
 SECTION B — NOTABLE INCOME VARIANCES:
@@ -535,7 +538,7 @@ SKIP accounts already reported in Section A.
 Do NOT confuse a negative variance with a negative actual — apply the same column-position test as Section C: only position [1] (the Current Period Actual) matters.
 Examples:
   Fine Reimbursement row: (850.00) - (850.00) 650.00 - 650.00 - → pos[1]=(850.00) negative → REPORT.
-  Pool & Gate Remotes row: (25.00) - (25.00) 25.00 - 25.00 - → pos[1]=(25.00) negative → REPORT.
+  Late Fee Reversal row:  (75.00) - (75.00) 150.00 - 150.00 - → pos[1]=(75.00) negative → REPORT.
 Format: "Negative income: [account name] ([account #]) ($X.XX)"
 
 SECTION C — NEGATIVE EXPENSE ACTUALS:
@@ -875,7 +878,7 @@ document.getElementById('excelBtn').addEventListener('click', async () => {
       const s   = String(item);
       const pre = idx === 0 ? '' : '\n';
       const base = { name: 'Arial', size: 10 };
-      if (/NSF|Leasing Fee|Collection Fee/i.test(s)) {
+      if (/NSF|Leasing Fee|Collection Fee|Pool & Gate Remotes/i.test(s)) {
         runs.push({ text: pre + s.replace(/\*\*/g, ''), font: { ...base, bold: true, color: { argb: DRED_TEXT } } });
       } else if (/^Negative expense:/i.test(s)) {
         runs.push({ text: pre + s, font: { ...base, bold: true, color: { argb: RED_TEXT } } });
