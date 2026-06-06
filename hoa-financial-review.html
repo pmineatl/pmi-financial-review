@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v30</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v31</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -368,7 +368,7 @@ function postProcessIncomeStatement(items) {
   const zeroBudgetPattern = /N\/A|Infinite|Cannot calculate|no budget|budget is zero|budget was zero|budget not set|budget not available|no budget set/i;
 
   // Issue 3: known income account prefixes that must never appear in Section C
-  const incomeAccountPattern = /\b(30100|30450|30500|30600|30800|30820|30850)\b|42-30/;
+  const incomeAccountPattern = /\b(30[0-9]{3}-00)\b|42-30/;
 
   // Issue 2: Section A keywords that require ** bold wrapping
   const sectionAPattern = /NSF|Leasing Fee|Collection Fee/i;
@@ -406,11 +406,7 @@ function postProcessIncomeStatement(items) {
       if (/^\*\*Collection Fee/i.test(s) && !validCollection.test(s)) return false;
       // Remove Section C items that are actually income accounts (those belong in B2)
       if (/^Negative expense:/i.test(s) && incomeAccountPattern.test(s)) return false;
-      // Filter Section B2 negative income items below $50
-      if (/^Negative income:/i.test(s)) {
-        const amtMatch = s.match(/\(\$?([\d,]+\.?\d*)\)/);
-        if (amtMatch && parseFloat(amtMatch[1].replace(/,/g, '')) < 50) return false;
-      }
+      // Section B2 negative income — no minimum threshold, all amounts reported
       // Remove Section C items below $50 (likely positive-actual misreads)
       if (/^Negative expense:/i.test(s)) {
         const amtMatch = s.match(/\(\$?([\d,]+\.?\d*)\)/);
@@ -519,12 +515,14 @@ STRICT RULE: Skip entirely if Current Period Budget is zero or blank. Do not rep
 Format: "Income variance: [account name] ([account #]) — Actual: $X.XX, Budget: $X.XX, Variance: X.X%"
 
 SECTION B2 — NEGATIVE INCOME ACTUALS:
-Report any INCOME account (in REVENUE or OTHER REVENUE sections) where the Current Period Actual is itself a negative number (shown in parentheses), regardless of whether the budget is zero.
-A negative income actual means income was reversed or refunded — this is always noteworthy.
-SKIP if the absolute dollar amount is less than $50.
+Report ANY INCOME account (in REVENUE or OTHER REVENUE sections) where the Current Period Actual is itself a negative number (shown in parentheses), regardless of the budget amount or dollar size.
+A negative income actual means income was reversed or refunded — this is ALWAYS noteworthy no matter the amount.
+Report ALL of them — there is NO minimum dollar threshold for this section.
 SKIP accounts already reported in Section A.
 Do NOT confuse a negative variance with a negative actual — apply the same column-position test as Section C: only position [1] (the Current Period Actual) matters.
-Example: Fine Reimbursement row shows (850.00) - - (850.00) 650.00 - 650.00 - → pos[1]=(850.00) is negative → REPORT.
+Examples:
+  Fine Reimbursement row: (850.00) - (850.00) 650.00 - 650.00 - → pos[1]=(850.00) negative → REPORT.
+  Pool & Gate Remotes row: (25.00) - (25.00) 25.00 - 25.00 - → pos[1]=(25.00) negative → REPORT.
 Format: "Negative income: [account name] ([account #]) ($X.XX)"
 
 SECTION C — NEGATIVE EXPENSE ACTUALS:
