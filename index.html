@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v37</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v38</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -458,9 +458,11 @@ function postProcessIncomeStatement(items) {
       return true;
     })
     .map(item => {
-      // Issue 2: ensure Section A items are bold
+      // Issue 2: ensure bare Section A items are bold — but NEVER wrap items that already
+      // carry a section prefix like "Negative income:", "Income variance:", etc.
       let s = String(item);
-      if (sectionAPattern.test(s) && !s.startsWith('**')) s = `**${s}**`;
+      const hasSectionPrefix = /^(Negative income|Income variance|Negative expense|Expense variance):/i.test(s);
+      if (sectionAPattern.test(s) && !s.startsWith('**') && !hasSectionPrefix) s = `**${s}**`;
       // Normalize variance percentages to positive (e.g. -100.0% → 100.0%)
       s = s.replace(/Variance:\s*-(\d+\.?\d*)%/g, 'Variance: $1%');
       // Strip the [cpb:...] and [cpv:...] tags (used for filtering only, not displayed)
@@ -468,7 +470,22 @@ function postProcessIncomeStatement(items) {
       return s;
     });
 
-  return processed.length === 0 ? ['OK'] : processed;
+  // Deduplicate: drop "Negative income: [account]" items whose account number is
+  // already captured by a bold Section A item — avoids showing both in the accounting report.
+  const getAcct = s => { const m = String(s).match(/\b(\d{5}-\d{2})\b/); return m ? m[1] : null; };
+  const sectionAAccts = new Set(
+    processed.filter(i => /^\*\*/.test(String(i))).map(getAcct).filter(Boolean)
+  );
+  const deduped = processed.filter(item => {
+    const s = String(item);
+    if (/^Negative income:/i.test(s)) {
+      const acct = getAcct(s);
+      if (acct && sectionAAccts.has(acct)) return false;
+    }
+    return true;
+  });
+
+  return deduped.length === 0 ? ['OK'] : deduped;
 }
 
 async function analyzePDF(file, monthDisplay) {
@@ -629,11 +646,48 @@ Respond ONLY with valid JSON, no markdown fences:
   if (!response.ok) { const err = await response.json(); throw new Error(err.error?.message || 'API error'); }
   const data = await response.json();
   const raw = data.content.map(i => i.text || '').join('');
-  let parsed;
-  try {
-    parsed = JSON.parse(raw.replace(/```json|```/g,'').trim());
-  } catch (e) {
-    throw new Error('PDF could not be parsed — file may be corrupt, encrypted, or unreadable. Try re-saving the PDF in Acrobat.');
+
+  // Extract JSON object — handles extra text Claude sometimes adds before/after the object
+  function extractJSON(text) {
+    const stripped = text.replace(/```json|```/g, '').trim();
+    // Try direct parse first
+    try { return JSON.parse(stripped); } catch (_) {}
+    // Fall back: grab the outermost {...} block
+    const m = stripped.match(/\{[\s\S]*\}/);
+    if (m) { try { return JSON.parse(m[0]); } catch (_) {} }
+    return null;
+  }
+
+  let parsed = extractJSON(raw);
+
+  // If parse failed, retry the API call once before giving up
+  if (!parsed) {
+    const retry = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': getApiKey(),
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 4096,
+        messages: [{ role: 'user', content: [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
+          { type: 'text', text: prompt }
+        ]}]
+      })
+    });
+    if (retry.ok) {
+      const retryData = await retry.json();
+      const retryRaw = retryData.content.map(i => i.text || '').join('');
+      parsed = extractJSON(retryRaw);
+    }
+  }
+
+  if (!parsed) {
+    throw new Error('Claude returned an unexpected response for this file. Re-run to retry, or try re-saving the PDF in Acrobat.');
   }
   if (Array.isArray(parsed.incomeStatement)) {
     parsed.incomeStatement = postProcessIncomeStatement(parsed.incomeStatement);
