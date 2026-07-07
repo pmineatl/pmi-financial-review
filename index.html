@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v39</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v40</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -873,13 +873,32 @@ Respond ONLY with valid JSON, no markdown fences:
     const stripped = text.replace(/```json|```/g, '').trim();
     // Try direct parse first
     try { return JSON.parse(stripped); } catch (_) {}
-    // Fall back: grab the outermost {...} block
-    const m = stripped.match(/\{[\s\S]*\}/);
-    if (m) { try { return JSON.parse(m[0]); } catch (_) {} }
+    // Fall back: scan for a balanced {...} block, ignoring braces inside string literals —
+    // more robust than a greedy regex when the model wraps the JSON in extra prose.
+    const start = stripped.indexOf('{');
+    if (start !== -1) {
+      let depth = 0, inString = false, escape = false;
+      for (let i = start; i < stripped.length; i++) {
+        const ch = stripped[i];
+        if (escape) { escape = false; continue; }
+        if (ch === '\\') { escape = true; continue; }
+        if (ch === '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+          depth--;
+          if (depth === 0) {
+            try { return JSON.parse(stripped.slice(start, i + 1)); } catch (_) {}
+            break;
+          }
+        }
+      }
+    }
     return null;
   }
 
   let parsed = extractJSON(raw);
+  let lastRaw = raw;
 
   // If parse failed, retry the API call once before giving up
   if (!parsed) {
@@ -904,11 +923,15 @@ Respond ONLY with valid JSON, no markdown fences:
       const retryData = await retry.json();
       const retryRaw = retryData.content.map(i => i.text || '').join('');
       parsed = extractJSON(retryRaw);
+      lastRaw = retryRaw;
     }
   }
 
   if (!parsed) {
-    throw new Error('Claude returned an unexpected response for this file. Re-run to retry, or try re-saving the PDF in Acrobat.');
+    // Include a snippet of what Claude actually returned so a repeated failure is diagnosable
+    // without needing to reproduce it — this shows up in the Excel error cell / Performance Log.
+    const snippet = lastRaw.slice(0, 250).replace(/\s+/g, ' ').trim();
+    throw new Error(`Claude returned an unexpected (non-JSON) response for this file — re-run to retry. Response started with: "${snippet}${lastRaw.length > 250 ? '…' : ''}"`);
   }
   if (Array.isArray(parsed.incomeStatement)) {
     parsed.incomeStatement = postProcessIncomeStatement(parsed.incomeStatement);
@@ -998,8 +1021,13 @@ document.getElementById('runBtn').addEventListener('click', async () => {
         saveSession(month, monthDisplay, reviewer, files);
         break;
       } catch (err) {
-        const isRateLimit = err.message && (err.message.toLowerCase().includes('rate limit') || err.message.toLowerCase().includes('rate_limit'));
-        const isTokenLimit = err.message && err.message.toLowerCase().includes('too long');
+        const msg = (err.message || '').toLowerCase();
+        const isRateLimit = msg.includes('rate limit') || msg.includes('rate_limit');
+        const isTokenLimit = msg.includes('too long');
+        // Non-JSON responses from Claude are usually a stochastic formatting slip (verbose
+        // preamble, dropped closing brace, etc.) rather than a deterministic failure — retrying
+        // with a fresh independent request resolves most of them.
+        const isUnexpectedResponse = msg.includes('unexpected') && msg.includes('response');
         if (isTokenLimit) {
           item.status = 'error';
           item.result = { communityName: item.file.name.replace('.pdf',''), bsOperating: 'Error: Document too large for API. Compress in Acrobat and retry.', bsReserve: 'Error', prepaid: 'Error', incomeStatement: ['Error'] };
@@ -1007,18 +1035,19 @@ document.getElementById('runBtn').addEventListener('click', async () => {
           renderFileList(); updateProgressUI();
           break;
         }
-        if (isRateLimit && attempt < maxRetries) {
+        if ((isRateLimit || isUnexpectedResponse) && attempt < maxRetries) {
           attempt++;
           fileLog.rateLimitHits++;
           item.status = 'rate-limit';
           renderFileList(); updateProgressUI();
-          // Back off: 30s first retry, 60s second, 90s third
-          await new Promise(r => setTimeout(r, 30000 * attempt));
+          // Rate limits need to wait out Anthropic's window (30s/60s/90s); a bad-format
+          // response just needs a fresh attempt, so back off much more lightly (5s/10s/15s).
+          await new Promise(r => setTimeout(r, (isRateLimit ? 30000 : 5000) * attempt));
           item.status = 'processing';
           renderFileList(); updateProgressUI();
         } else {
           item.status = 'error';
-          fileLog.outcome = isRateLimit ? 'failed-rate-limit' : 'failed-error';
+          fileLog.outcome = isRateLimit ? 'failed-rate-limit' : (isUnexpectedResponse ? 'failed-unexpected-response' : 'failed-error');
           item.result = { communityName: item.file.name.replace('.pdf',''), bsOperating: 'Error: '+err.message, bsReserve: 'Error', prepaid: 'Error', incomeStatement: ['Error'] };
           renderFileList(); updateProgressUI();
           break;
