@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v38</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v39</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -133,11 +133,42 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
     <span class="apikey-status" id="apikeyStatus"></span>
   </div>
 
+  <div class="apikey-bar">
+    <div class="apikey-label">☁ CINC Worker URL</div>
+    <input type="text" id="cincWorkerUrlInput" placeholder="https://pmi-cinc-proxy.....workers.dev" autocomplete="off"/>
+    <div class="apikey-label">Token</div>
+    <input type="password" id="cincWorkerTokenInput" placeholder="shared token" autocomplete="off"/>
+    <button class="apikey-save" id="cincWorkerSave">Save</button>
+    <span class="apikey-status" id="cincWorkerStatus"></span>
+  </div>
+
   <div class="section-label">Upload Financial Report PDFs</div>
   <div class="drop-zone" id="dropZone">
     <input type="file" id="fileInput" accept=".pdf" multiple/>
     <div class="drop-title">Drop PDF files here or click to browse</div>
     <div class="drop-sub">Upload one or multiple HOA financial report PDFs — each community analyzed separately</div>
+  </div>
+
+  <div style="margin-bottom:16px;">
+    <button class="btn-sec" id="cincPullToggle">☁ Pull from CINC</button>
+    <div class="cinc-pull-panel" id="cincPullPanel" style="display:none; margin-top:12px;">
+      <div class="controls-row" style="margin-bottom:8px;">
+        <div class="field"><label>Start Date</label><input type="date" id="cincStartDate"/></div>
+        <div class="field"><label>End Date</label><input type="date" id="cincEndDate"/></div>
+        <button class="run-btn" id="cincFetchListBtn">Find Documents →</button>
+      </div>
+      <div class="progress-label" id="cincPullStatus"></div>
+    </div>
+  </div>
+
+  <div class="resume-banner" id="cincPreview" style="max-width:none; align-items:flex-start;">
+    <span class="resume-banner-icon">☁</span>
+    <div style="flex:1; min-width:0;">
+      <div class="resume-banner-text" id="cincPreviewInfo" style="margin-bottom:8px;"></div>
+      <div id="cincPreviewList" style="margin:0 0 10px 0; max-height:260px; overflow-y:auto;"></div>
+      <button class="resume-banner-btn resume-view-btn" id="cincImportBtn">Import Selected →</button>
+      <button class="resume-banner-btn resume-clear-btn" id="cincCancelBtn">Cancel</button>
+    </div>
   </div>
 
   <div class="file-list" id="fileList"></div>
@@ -215,6 +246,22 @@ document.getElementById('apiKeySave').addEventListener('click', () => {
   apikeyStatus.style.color='var(--green)'; apikeyStatus.textContent='✓ Key saved';
 });
 function getApiKey() { return apiKeyInput.value.trim() || localStorage.getItem('pmi_anthropic_key') || ''; }
+
+// CINC Worker settings
+const cincWorkerUrlInput = document.getElementById('cincWorkerUrlInput');
+const cincWorkerTokenInput = document.getElementById('cincWorkerTokenInput');
+const cincWorkerStatus = document.getElementById('cincWorkerStatus');
+const savedCincUrl = localStorage.getItem('pmi_cinc_worker_url');
+const savedCincToken = localStorage.getItem('pmi_cinc_worker_token');
+if (savedCincUrl) cincWorkerUrlInput.value = savedCincUrl;
+if (savedCincToken) { cincWorkerTokenInput.value = savedCincToken; cincWorkerStatus.textContent = '✓ Saved'; }
+document.getElementById('cincWorkerSave').addEventListener('click', () => {
+  localStorage.setItem('pmi_cinc_worker_url', cincWorkerUrlInput.value.trim());
+  localStorage.setItem('pmi_cinc_worker_token', cincWorkerTokenInput.value.trim());
+  cincWorkerStatus.style.color = 'var(--green)'; cincWorkerStatus.textContent = '✓ Saved';
+});
+function getCincWorkerUrl() { return cincWorkerUrlInput.value.trim() || localStorage.getItem('pmi_cinc_worker_url') || ''; }
+function getCincWorkerToken() { return cincWorkerTokenInput.value.trim() || localStorage.getItem('pmi_cinc_worker_token') || ''; }
 
 // ===== SESSION STORAGE (pause/resume) =====
 const SESSION_KEY = 'pmi_review_session';
@@ -323,6 +370,162 @@ dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classL
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
 dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('dragover'); addFiles(Array.from(e.dataTransfer.files)); });
 
+// ===== CINC INTEGRATION =====
+const CINC_CONCURRENCY = 3; // simultaneous document fetches from the Worker
+
+// Default date range: last 7 days (confirmed safe against CINC's max-span limit)
+{
+  const cincEndInput = document.getElementById('cincEndDate');
+  const cincStartInput = document.getElementById('cincStartDate');
+  cincEndInput.value = now.toISOString().slice(0, 10);
+  const cincStart = new Date(now);
+  cincStart.setDate(cincStart.getDate() - 7);
+  cincStartInput.value = cincStart.toISOString().slice(0, 10);
+}
+
+let cincFetchedItems = []; // flattened {associationName, base64, fileId} accumulated during a pull
+
+function base64ToUint8(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function base64ToFile(base64, communityName) {
+  const bytes = base64ToUint8(base64);
+  const safeName = communityName.replace(/[\/\\:*?"<>|]/g, '-').trim() || 'Unknown Community';
+  return new File([bytes], safeName + '.pdf', { type: 'application/pdf' });
+}
+
+async function cincWorkerFetch(path) {
+  const workerUrl = getCincWorkerUrl();
+  const token = getCincWorkerToken();
+  if (!workerUrl) throw new Error('Please enter and save your CINC Worker URL first.');
+  if (!token) throw new Error('Please enter and save your CINC Worker token first.');
+  const response = await fetch(workerUrl.replace(/\/$/, '') + path, {
+    headers: { 'X-App-Token': token }
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) throw new Error((data && data.error) || `CINC Worker error (${response.status})`);
+  return data;
+}
+
+async function fetchCincDocumentList(startDate, endDate) {
+  return cincWorkerFetch(`/api/cinc/list?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`);
+}
+
+async function fetchCincDocument(fileId) {
+  return cincWorkerFetch(`/api/cinc/document?fileId=${encodeURIComponent(fileId)}`);
+}
+
+const cincPullToggle = document.getElementById('cincPullToggle');
+const cincPullPanel = document.getElementById('cincPullPanel');
+const cincPullStatus = document.getElementById('cincPullStatus');
+const cincPreview = document.getElementById('cincPreview');
+const cincPreviewInfo = document.getElementById('cincPreviewInfo');
+const cincPreviewList = document.getElementById('cincPreviewList');
+
+cincPullToggle.addEventListener('click', () => {
+  cincPullPanel.style.display = cincPullPanel.style.display === 'none' ? 'block' : 'none';
+});
+
+document.getElementById('cincFetchListBtn').addEventListener('click', async () => {
+  hideError();
+  const startDate = document.getElementById('cincStartDate').value;
+  const endDate = document.getElementById('cincEndDate').value;
+  if (!startDate || !endDate) { showError('Please choose a start and end date.'); return; }
+
+  const fetchBtn = document.getElementById('cincFetchListBtn');
+  fetchBtn.disabled = true;
+  cincPullStatus.textContent = 'Fetching document list from CINC…';
+
+  try {
+    const list = await fetchCincDocumentList(startDate, endDate);
+    if (!list.length) {
+      cincPullStatus.textContent = 'No documents found in that date range.';
+      fetchBtn.disabled = false;
+      return;
+    }
+
+    cincFetchedItems = [];
+    let completed = 0;
+    const queue = [...list];
+    const startWorker = async () => {
+      while (true) {
+        const entry = queue.shift();
+        if (!entry) break;
+        try {
+          const doc = await fetchCincDocument(entry.fileId);
+          doc.items.forEach(it => cincFetchedItems.push({ associationName: it.associationName, base64: it.base64, fileId: entry.fileId }));
+        } catch (err) {
+          // Skip individual document failures — surfaced implicitly by a lower final count.
+        }
+        completed++;
+        cincPullStatus.textContent = `[${completed}/${list.length}] Fetching documents…`;
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CINC_CONCURRENCY, queue.length) }, startWorker));
+
+    fetchBtn.disabled = false;
+    if (!cincFetchedItems.length) {
+      cincPullStatus.textContent = `Checked ${list.length} document(s) — none were valid financial PDFs.`;
+      return;
+    }
+
+    // Suffix duplicate association names within this pull so they don't collide visually
+    const nameCounts = {};
+    cincFetchedItems.forEach(item => {
+      nameCounts[item.associationName] = (nameCounts[item.associationName] || 0) + 1;
+      item.__occurrence = nameCounts[item.associationName];
+    });
+    const seen = {};
+    cincFetchedItems.forEach(item => {
+      if (nameCounts[item.associationName] > 1) {
+        seen[item.associationName] = (seen[item.associationName] || 0) + 1;
+        item.displayName = `${item.associationName} (${seen[item.associationName]})`;
+      } else {
+        item.displayName = item.associationName;
+      }
+    });
+
+    renderCincPreview(startDate, endDate);
+    cincPullPanel.style.display = 'none';
+  } catch (err) {
+    fetchBtn.disabled = false;
+    cincPullStatus.textContent = '';
+    showError('CINC fetch failed: ' + err.message);
+  }
+});
+
+function renderCincPreview(startDate, endDate) {
+  cincPreviewInfo.textContent = `Found ${cincFetchedItems.length} financial PDF${cincFetchedItems.length === 1 ? '' : 's'} for ${startDate} – ${endDate}. Uncheck any that don't belong before importing.`;
+  cincPreviewList.innerHTML = '';
+  cincFetchedItems.forEach((item, i) => {
+    const sizeKB = Math.round(item.base64.length * 0.75 / 1024);
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:4px 0; font-family:\'IBM Plex Mono\',monospace; font-size:11px; color:#6b4f00;';
+    row.innerHTML = `<input type="checkbox" checked data-idx="${i}"/> <span>${item.displayName} <span style="color:var(--text-dim)">— ${sizeKB} KB</span></span>`;
+    cincPreviewList.appendChild(row);
+  });
+  cincPreview.style.display = 'flex';
+}
+
+document.getElementById('cincImportBtn').addEventListener('click', () => {
+  const checked = Array.from(cincPreviewList.querySelectorAll('input[type="checkbox"]:checked')).map(cb => parseInt(cb.dataset.idx, 10));
+  const selected = checked.map(i => cincFetchedItems[i]);
+  const newFiles = selected.map(item => base64ToFile(item.base64, item.displayName));
+  addFiles(newFiles);
+  cincPreview.style.display = 'none';
+  cincFetchedItems = [];
+  fileListEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+});
+
+document.getElementById('cincCancelBtn').addEventListener('click', () => {
+  cincFetchedItems = [];
+  cincPreview.style.display = 'none';
+});
+
 const MAX_PAGES = 99;
 
 // Safe chunked base64 encoder — avoids call stack overflow on large files
@@ -337,28 +540,46 @@ function uint8ToBase64(uint8) {
 
 async function toBase64(file) {
   const arrayBuffer = await file.arrayBuffer();
-  const uint8 = new Uint8Array(arrayBuffer);
+  // Keep an untouched copy — PDFLib may mutate the array during load
+  const rawBytes = new Uint8Array(arrayBuffer.slice());
 
-  try {
-    const pdfDoc = await PDFLib.PDFDocument.load(uint8, { ignoreEncryption: true });
-    const totalPages = pdfDoc.getPageCount();
-
-    if (totalPages <= MAX_PAGES) {
-      return { base64: uint8ToBase64(uint8), pageCount: totalPages, truncated: false };
-    }
-
-    // Truncate to first 99 pages
-    const truncatedDoc = await PDFLib.PDFDocument.create();
-    const pageIndices = Array.from({ length: MAX_PAGES }, (_, i) => i);
-    const copiedPages = await truncatedDoc.copyPages(pdfDoc, pageIndices);
-    copiedPages.forEach(p => truncatedDoc.addPage(p));
-    const truncatedBytes = await truncatedDoc.save();
-    return { base64: uint8ToBase64(truncatedBytes), pageCount: totalPages, truncated: true };
-
-  } catch (err) {
-    // If PDF parsing fails, send raw bytes as-is
-    return { base64: uint8ToBase64(uint8), pageCount: null, truncated: false };
+  async function tryLoad(bytes, opts) {
+    return PDFLib.PDFDocument.load(bytes, opts);
   }
+
+  async function normalize(pdfDoc) {
+    // Re-save without object streams to strip linearization hints
+    const out = await pdfDoc.save({ useObjectStreams: false });
+    return new Uint8Array(out);
+  }
+
+  const loadOpts = [
+    { ignoreEncryption: true },
+    { ignoreEncryption: true, throwOnInvalidObject: false, updateMetadata: false },
+  ];
+
+  for (const opts of loadOpts) {
+    try {
+      const pdfDoc = await tryLoad(new Uint8Array(rawBytes), opts);
+      const totalPages = pdfDoc.getPageCount();
+
+      if (totalPages <= MAX_PAGES) {
+        const normalized = await normalize(pdfDoc);
+        return { base64: uint8ToBase64(normalized), pageCount: totalPages, truncated: false };
+      }
+
+      // Truncate to first MAX_PAGES pages
+      const truncatedDoc = await PDFLib.PDFDocument.create();
+      const copiedPages = await truncatedDoc.copyPages(pdfDoc, Array.from({ length: MAX_PAGES }, (_, i) => i));
+      copiedPages.forEach(p => truncatedDoc.addPage(p));
+      const truncatedBytes = await normalize(truncatedDoc);
+      return { base64: uint8ToBase64(truncatedBytes), pageCount: totalPages, truncated: true };
+
+    } catch (_) { /* try next option */ }
+  }
+
+  // All PDFLib attempts failed — send raw bytes as-is
+  return { base64: uint8ToBase64(rawBytes), pageCount: null, truncated: false };
 }
 
 // Post-process incomeStatement array to correct known AI output issues
@@ -632,7 +853,7 @@ Respond ONLY with valid JSON, no markdown fences:
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
+      max_tokens: 8192,
       messages: [{
         role: 'user',
         content: [
@@ -672,7 +893,7 @@ Respond ONLY with valid JSON, no markdown fences:
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 4096,
+        max_tokens: 8192,
         messages: [{ role: 'user', content: [
           { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
           { type: 'text', text: prompt }
