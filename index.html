@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v40</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v41</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -719,8 +719,17 @@ CRITICAL OUTPUT RULE: You must respond with ONLY a valid JSON object. No prose, 
 Analyze this HOA financial report package and perform the following checks:
 
 STEP 1 – BALANCE SHEET REVIEW:
-- Operating Column: Confirm Total Operating Assets = Total Operating Liabilities + Equity. Balanced → "OK". If not → report both figures and the difference.
-- Reserve Column: Same check for reserve side. Balanced → "OK". If not → report both figures and difference.
+The balance sheet has three columns: Operating, Reserve, and Total. Check Operating and Reserve INDEPENDENTLY of each other — do not use whether the Total column balances as evidence that Operating or Reserve balance. A balanced Total column does NOT mean Operating and Reserve are each individually balanced: it is common for a misclassified amount to make Operating overstated and Reserve understated (or vice versa) by the exact same dollar amount, which cancels out in Total while both Operating and Reserve are genuinely out of balance. You must catch this case.
+
+For the Operating column: take the "Total: Assets" value from the Operating column and the "Total: Liabilities & Equity" value from the Operating column. Subtract one from the other.
+  - Difference is $0.00 (or under $1 rounding) → bsOperating = "OK".
+  - Otherwise → bsOperating = "Out of balance — Total Assets: $X; Total Liabilities & Equity: $Y; Difference: $Z" using the actual Operating-column figures.
+
+For the Reserve column: do the exact same subtraction using only the Reserve column's "Total: Assets" and "Total: Liabilities & Equity" values, independent of the Operating check above.
+  - Difference is $0.00 (or under $1 rounding) → bsReserve = "OK".
+  - Otherwise → bsReserve = "Out of balance — Total Assets: $X; Total Liabilities & Equity: $Y; Difference: $Z" using the actual Reserve-column figures.
+
+Do this arithmetic explicitly for both columns even if it looks like the document balances overall — never skip either check.
 
 CASH EXTRACTION (report as separate fields, do NOT factor into bsOperating):
 Extract these two numbers and report them in the JSON as cashBalance and annualIncomeBudget:
