@@ -142,6 +142,31 @@ t('negative actual routes to Section C, not Section D', buildIncomeStatementFind
   { accountNumber: '40600-00', accountName: 'Insurance', currentPeriodActual: -64, currentPeriodBudget: 1141.03 }]}),
   ['Negative expense: Insurance (40600-00) ($64.00)']);
 
+// ------------------------------------------------------- ledger adjustments
+// Negative balances on any assessment type other than PrePaid come from
+// incorrect ledger adjustments. Warning tier, never critical.
+section('Ledger adjustments (homeowner aging)');
+t('no aging report in the package', checkLedgerAdjustments({ agingReportPresent: false, agingNegatives: [] }), 'Not provided');
+t('aging report present and clean', checkLedgerAdjustments({ agingReportPresent: true, agingNegatives: [] }), 'OK');
+t('PrePaid credits are normal and never reported', checkLedgerAdjustments({ agingReportPresent: true, agingNegatives: [
+  { accountCode: 'CCS001', ownerName: 'A Homeowner', lineItem: 'PrePaid', balance: -2100 }]}), 'OK');
+t('hyphenated Pre-Paid spelling also excluded', checkLedgerAdjustments({ agingReportPresent: true, agingNegatives: [
+  { accountCode: 'CCS001', ownerName: 'A Homeowner', lineItem: 'Pre-Paid Assessments', balance: -500 }]}), 'OK');
+t('positive balances are not adjustments', checkLedgerAdjustments({ agingReportPresent: true, agingNegatives: [
+  { accountCode: 'CCS001', ownerName: 'A', lineItem: 'Late Fee 2026', balance: 150 }]}), 'OK');
+t('negative late fee is reported', checkLedgerAdjustments({ agingReportPresent: true, agingNegatives: [
+  { accountCode: 'CCS019', ownerName: 'Grantley Joseph & Carla Joseph', lineItem: 'Late Fee (Delinquent Fee)2026', balance: -150 }]}),
+  ['CCS019 Grantley Joseph & Carla Joseph — Late Fee (Delinquent Fee)2026: ($150.00)']);
+t('several rows on one account are listed separately', checkLedgerAdjustments({ agingReportPresent: true, agingNegatives: [
+  { accountCode: 'CCS550', ownerName: 'Imad Sabbagh', lineItem: 'Interest (Delinquent Interest)2026', balance: -6.42 },
+  { accountCode: 'CCS550', ownerName: 'Imad Sabbagh', lineItem: 'Late Fee (Delinquent Fee)2026', balance: -737.75 }]}),
+  ['CCS550 Imad Sabbagh — Interest (Delinquent Interest)2026: ($6.42)',
+   'CCS550 Imad Sabbagh — Late Fee (Delinquent Fee)2026: ($737.75)']);
+t('[regression] an account netting to zero is still flagged on the negative row',
+  checkLedgerAdjustments({ agingReportPresent: true, agingNegatives: [
+    { accountCode: 'CCS276', ownerName: 'Edmond Chao', lineItem: 'Late Fee (Delinquent Fee)2026', balance: -150 }]}),
+  ['CCS276 Edmond Chao — Late Fee (Delinquent Fee)2026: ($150.00)']);
+
 // ---------------------------------------------------------------------- low cash
 section('Low cash');
 const lc = (cash, budget) => buildFindings({
@@ -170,8 +195,8 @@ section('Whole-record assembly');
     annualIncomeBudget: null,
     specialIncome: [], incomeAccounts: [], expenseAccounts: []
   });
-  t('clean record', [r.communityName, r.bsOperating, r.bsReserve, r.prepaid, r.incomeStatement],
-    ['Test HOA', 'OK', 'Not provided', 'Not provided', ['OK']]);
+  t('clean record', [r.communityName, r.bsOperating, r.bsReserve, r.prepaid, r.ledgerAdjustments, r.incomeStatement],
+    ['Test HOA', 'OK', 'Not provided', 'Not provided', 'Not provided', ['OK']]);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

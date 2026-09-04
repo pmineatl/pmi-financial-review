@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v45</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v46</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -221,6 +221,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
             <th>BS — Operating</th>
             <th>BS — Reserve</th>
             <th>Pre-Paid Recon</th>
+            <th>Ledger Adjustments</th>
             <th>Income Statement Review</th>
           </tr>
         </thead>
@@ -763,6 +764,28 @@ function buildIncomeStatementFindings(x) {
   return items.length ? items : ['OK'];
 }
 
+// Homeowner ledger adjustments: a negative balance on any assessment type other
+// than PrePaid. These come from incorrect ledger adjustments and are easy to miss
+// because an account can carry an equal positive and negative balance in two
+// different line items, netting to zero at the account level while both rows are
+// wrong. Each row is judged on its own balance, never on the account total.
+// Warning tier - it is a bookkeeping correction, not a broken statement.
+function checkLedgerAdjustments(x) {
+  // Only an explicit true means the aging report was examined. Anything else -
+  // absent, false, or an older extraction that predates this check - is
+  // "Not provided", never a clean bill of health we did not actually verify.
+  if (!x || x.agingReportPresent !== true) return 'Not provided';
+  const rows = (x.agingNegatives || []).filter(r =>
+    r && isNum(r.balance) && r.balance < 0 &&
+    // Re-apply the PrePaid exclusion here so a stray one cannot slip through.
+    !/^\s*pre-?paid/i.test(String(r.lineItem || ''))
+  );
+  if (!rows.length) return 'OK';
+  return rows.map(r =>
+    `${r.accountCode || '?'} ${r.ownerName || ''} — ${r.lineItem}: ${parenAmount(r.balance)}`.replace(/\s+—/, ' —')
+  );
+}
+
 // Turn one extraction into the four report fields.
 function buildFindings(x) {
   const bs = x.balanceSheet || {};
@@ -786,6 +809,7 @@ function buildFindings(x) {
     bsOperating,
     bsReserve,
     prepaid: checkPrepaid(x.prepaid),
+    ledgerAdjustments: checkLedgerAdjustments(x),
     incomeStatement: buildIncomeStatementFindings(x)
   };
 }
@@ -822,6 +846,15 @@ SPECIAL INCOME ACCOUNTS
 specialIncome: report a row here only if its account number begins with 30450, 30700, 30800 or 30850 AND it appears as a line item in the income statement's revenue section with a value in the Current Period Actual column. Report the Current Period Actual exactly, including zero and negative values, and also report ytdActual, the value in the YTD Actual column (position 4) for that same row.
 Never take these from anywhere else in the package — not cash disbursements, not invoice addenda, not AR aging, not transaction histories, not homeowner ledgers. A line such as "Addendum for 4/30/2026; Leasing Management Fee - $120.00 Account - ASHLX027" is a transaction detail, not an income statement row, and must be ignored. If one of these accounts does not appear as an income statement revenue row, omit it.
 A row also appearing in specialIncome should still be reported in incomeAccounts.
+
+HOMEOWNER AGING REPORT
+Set agingReportPresent true if the package contains a "Homeowner Aging Report", false otherwise.
+If it is present, examine every homeowner account in it, across every page. Each account lists one row per assessment type, and each row ends with a Balance. A balance in parentheses is negative.
+In agingNegatives, report every row whose Balance is negative, EXCEPT rows whose description is PrePaid. PrePaid credits are normal and must be left out.
+Negative balances in any other assessment type - late fees, interest, assessments, fines, legal fees and so on - are the ones to report. Report each as a separate entry with the account code, the owner name, the line item description exactly as printed, and the balance as a negative number.
+Do not skip an account because its Total is zero. An account can hold a positive balance in one line item and an equal negative balance in another, which nets to zero at the account level while both rows are still wrong. Judge each row on its own Balance.
+The aging report ends with an association-wide summary that lists each assessment type once with a single Total column. That summary is a roll-up of the homeowner rows above it, not a homeowner account - ignore it entirely, or the same balances will be counted twice.
+If the aging report is absent, or present with no negative non-PrePaid rows, return an empty list.
 
 Also report communityName exactly as printed on the report.`;
 
@@ -865,6 +898,20 @@ const BALANCE_COLUMN_SCHEMA = {
   required: ['totalAssets', 'totalLiabilitiesAndEquity'],
   additionalProperties: false
 };
+// Homeowner aging line items carrying a negative balance. PrePaid credits are
+// excluded at the source because they are normal and would swamp the list.
+const AGING_NEGATIVE_SCHEMA = {
+  type: 'object',
+  properties: {
+    accountCode: { type: 'string' },
+    ownerName: { type: 'string' },
+    lineItem: { type: 'string' },
+    balance: { type: 'number' }
+  },
+  required: ['accountCode', 'ownerName', 'lineItem', 'balance'],
+  additionalProperties: false
+};
+
 const EXTRACTION_SCHEMA = {
   type: 'object',
   properties: {
@@ -893,9 +940,11 @@ const EXTRACTION_SCHEMA = {
     annualIncomeBudget: { type: ['number', 'null'] },
     specialIncome: { type: 'array', items: SPECIAL_INCOME_SCHEMA },
     incomeAccounts: { type: 'array', items: ACCOUNT_ITEM_SCHEMA },
-    expenseAccounts: { type: 'array', items: ACCOUNT_ITEM_SCHEMA }
+    expenseAccounts: { type: 'array', items: ACCOUNT_ITEM_SCHEMA },
+    agingReportPresent: { type: 'boolean' },
+    agingNegatives: { type: 'array', items: AGING_NEGATIVE_SCHEMA }
   },
-  required: ['communityName', 'balanceSheet', 'prepaid', 'annualIncomeBudget', 'specialIncome', 'incomeAccounts', 'expenseAccounts'],
+  required: ['communityName', 'balanceSheet', 'prepaid', 'annualIncomeBudget', 'specialIncome', 'incomeAccounts', 'expenseAccounts', 'agingReportPresent', 'agingNegatives'],
   additionalProperties: false
 };
 
@@ -1219,12 +1268,15 @@ function renderResults(data, monthDisplay) {
     const bsOpOK = isOK(a.bsOperating), bsResOK = isOK(a.bsReserve), ppOK = isOK(a.prepaid), isOKr = isOK(a.incomeStatement);
     // Low Cash = Warning tier; Very Low Cash or other BS issue = Critical tier
     const bsOpLowCash = isLowCash(a.bsOperating);
+    // Ledger adjustments are a bookkeeping correction, so they raise a warning
+    // and never a critical, no matter how many rows are affected.
+    const ledgerOK = isOK(a.ledgerAdjustments) || isNotProvided(a.ledgerAdjustments);
     const hasCrit = (!bsOpOK && !bsOpLowCash) || !bsResOK || !ppOK;
-    const hasWarn = bsOpLowCash || !isOKr;
+    const hasWarn = bsOpLowCash || !isOKr || !ledgerOK;
     if (hasCrit) crit++; else if (hasWarn) warn++; else ok++;
     const tr = document.createElement('tr');
     tr.className = hasCrit ? 'row-critical' : hasWarn ? 'row-warning' : 'row-ok';
-    tr.innerHTML = `<td>${esc(a.communityName||'Unknown')}</td><td>${renderCell(a.bsOperating)}</td><td>${renderCell(a.bsReserve)}</td><td>${renderCell(a.prepaid)}</td><td>${renderISCell(a.incomeStatement)}</td>`;
+    tr.innerHTML = `<td>${esc(a.communityName||'Unknown')}</td><td>${renderCell(a.bsOperating)}</td><td>${renderCell(a.bsReserve)}</td><td>${renderCell(a.prepaid)}</td><td>${renderLedgerCell(a.ledgerAdjustments)}</td><td>${renderISCell(a.incomeStatement)}</td>`;
     tbody.appendChild(tr);
   });
 
@@ -1245,6 +1297,15 @@ function renderCell(val) {
   if (isVeryLowCash(val)) return `<span class="cell-issue" style="font-weight:600;">${esc(String(val||''))}</span>`;
   return `<span class="cell-issue">${esc(String(val||''))}</span>`;
 }
+function isNotProvided(val) { return String(val || '').toLowerCase().trim() === 'not provided'; }
+
+function renderLedgerCell(val) {
+  if (isOK(val)) return '<span class="cell-ok">OK</span>';
+  if (isNotProvided(val)) return '<span class="cell-dim">Not provided</span>';
+  const rows = Array.isArray(val) ? val : [String(val)];
+  return rows.map(v => `<span class="cell-warn-line cell-warn">${esc(v)}</span>`).join('');
+}
+
 function renderISCell(val) {
   if (isOK(val)) return '<span class="cell-ok">OK</span>';
   if (!Array.isArray(val)) return `<span class="cell-warn">${esc(String(val))}</span>`;
@@ -1351,10 +1412,10 @@ async function buildExcelWorkbook(reportType) {
   // ── ACCOUNTING REPORT sheet ───────────────────────────────────────────────
   if (reportType === 'accounting') {
     const ws = workbook.addWorksheet('Accounting Review');
-    ws.columns = [{ width: 38 }, { width: 30 }, { width: 30 }, { width: 30 }, { width: 50 }, { width: 13 }];
-    addTitleRows(ws, 'PMI Northeast Atlanta — Accounting Review', 6);
+    ws.columns = [{ width: 38 }, { width: 30 }, { width: 30 }, { width: 30 }, { width: 52 }, { width: 50 }, { width: 13 }];
+    addTitleRows(ws, 'PMI Northeast Atlanta — Accounting Review', 7);
 
-    const rh = ws.addRow(['Community', 'BS Operating', 'BS Reserve', 'Pre-Paid Reconciliation', 'Section A — Special Income Items', 'Status']);
+    const rh = ws.addRow(['Community', 'BS Operating', 'BS Reserve', 'Pre-Paid Reconciliation', 'Ledger Adjustments — Negative Non-PrePaid Balances', 'Section A — Special Income Items', 'Status']);
     rh.height = 18; rh.eachCell(cell => hdrCell(cell));
 
     globalResults.forEach(a => {
@@ -1362,20 +1423,30 @@ async function buildExcelWorkbook(reportType) {
       const bsOpLC = isLowCash(a.bsOperating);
       const secA   = getSectionAItems(a.incomeStatement);
       const secAOK = isOK(secA);
+      const ledgerOK = isOK(a.ledgerAdjustments) || isNotProvided(a.ledgerAdjustments);
       const hasCrit = (!bsOpOK && !bsOpLC) || !bsResOK || !ppOK;
-      const status  = hasCrit ? 'CRITICAL' : (bsOpLC || !secAOK) ? 'WARNING' : 'OK';
+      // Ledger adjustments only ever raise a warning, never a critical.
+      const status  = hasCrit ? 'CRITICAL' : (bsOpLC || !secAOK || !ledgerOK) ? 'WARNING' : 'OK';
       const sc = statusColors(status);
 
+      const ledgerRows = Array.isArray(a.ledgerAdjustments) ? a.ledgerAdjustments : [];
       const dr = ws.addRow([
         a.communityName || 'Unknown',
         bsOpOK ? 'OK' : String(a.bsOperating || ''),
         bsResOK ? 'OK' : String(a.bsReserve || ''),
         ppOK ? 'OK' : String(a.prepaid || ''),
+        ledgerOK ? (isNotProvided(a.ledgerAdjustments) ? 'Not provided' : 'OK') : ledgerRows.join('\n'),
         '', status
       ]);
       dr.height = 60;
       dr.getCell(1).font      = { name: 'Arial', size: 10, bold: true };
       dr.getCell(1).alignment = { vertical: 'top', wrapText: true };
+
+      const ledgerCell = dr.getCell(5);
+      ledgerCell.font = { name: 'Arial', size: 10, bold: ledgerOK,
+        color: { argb: ledgerOK ? (isNotProvided(a.ledgerAdjustments) ? BLACK : OK_FONT) : WARN_FONT } };
+      if (!ledgerOK) ledgerCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: WARN_FILL } };
+      ledgerCell.alignment = { vertical: 'top', wrapText: true };
 
       [2, 3, 4].forEach(col => {
         const cell = dr.getCell(col);
@@ -1388,11 +1459,11 @@ async function buildExcelWorkbook(reportType) {
         cell.alignment = { horizontal: 'center', vertical: 'top', wrapText: true };
       });
 
-      const isCell = dr.getCell(5);
+      const isCell = dr.getCell(6);
       isCell.value     = buildISRichText(secA);
       isCell.alignment = { vertical: 'top', wrapText: true };
 
-      const stCell = dr.getCell(6);
+      const stCell = dr.getCell(7);
       stCell.font      = { name: 'Arial', size: 10, bold: true, color: { argb: sc.font } };
       stCell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: sc.fill } };
       stCell.alignment = { horizontal: 'center', vertical: 'top' };
