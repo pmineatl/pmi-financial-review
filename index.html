@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v43</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v44</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -588,141 +588,274 @@ async function toBase64(file) {
   return { base64: uint8ToBase64(rawBytes), pageCount: null, truncated: false };
 }
 
-// Post-process incomeStatement array to correct known AI output issues
-function postProcessIncomeStatement(items) {
-  if (!Array.isArray(items)) return items;
+// ===== FINDINGS ENGINE =====
+// The model extracts raw figures only; every threshold, comparison and piece of
+// wording below is computed here. Prior versions asked the model to apply the
+// rules and emit finished sentences, then re-parsed those sentences with regex —
+// which is where the missed balance-sheet imbalances (v41) and the false Low Cash
+// flags (v34) came from. Extraction is a transcription task; judgement is code.
 
-  // Issue 1: zero-budget noise patterns the AI produces despite prompt rules
-  const zeroBudgetPattern = /N\/A|Infinite|Cannot calculate|no budget|budget is zero|budget was zero|budget not set|budget not available|no budget set/i;
+const VARIANCE_PCT_THRESHOLD = 10;   // report variances above this percentage
+const VARIANCE_MIN_DOLLARS   = 50;   // ...but only when the dollar gap is at least this
+const NEGATIVE_EXPENSE_MIN   = 50;   // ignore trivial negative expense actuals
+const BALANCE_TOLERANCE      = 0.01; // treat sub-cent differences as balanced
+const LOW_CASH_RATIO         = 0.20;
+const VERY_LOW_CASH_RATIO    = 0.10;
 
-  // Issue 3: known income account prefixes that must never appear in Section C
-  const incomeAccountPattern = /\b(30[0-9]{3}-00)\b|42-30/;
+// Section A is restricted to these four accounts. The label is ours, not the
+// model's, and the account number is authoritative: an item whose number is not
+// on this list is dropped no matter what the model called it.
+const SECTION_A_ACCOUNTS = {
+  '30850': 'NSF Charges',
+  '30450': 'Leasing Fee Income',
+  '30800': 'Collection Fee Income',
+  '30700': 'Pool & Gate Remotes'
+};
 
-  // Issue 2: Section A keywords that require ** bold wrapping
-  const sectionAPattern = /NSF|Leasing Fee|Collection Fee|Pool & Gate Remotes/i;
+const money = n => '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const isNum = v => typeof v === 'number' && isFinite(v);
+// Accounting style used throughout the reports: parentheses carry the sign.
+const parenAmount = n => '($' + Math.abs(Number(n)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ')';
+// Section A keeps the sign inside the parentheses, e.g. ($-480.00).
+const signedAmount = n => '($' + (Number(n) < 0 ? '-' : '')
+  + Math.abs(Number(n)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ')';
 
-  // Build set of account numbers that appear in Section D (positive actuals confirmed)
-  const sectionDAccounts = new Set(
-    items
-      .filter(i => /^Expense variance:/i.test(String(i)))
-      .map(i => { const m = String(i).match(/\((\d{5}-\d{2}|[\d-]+)\)/); return m ? m[1] : null; })
-      .filter(Boolean)
-  );
-
-  // Build set of account numbers where Section D shows Actual: $0.00 (zero current-period actual)
-  // These cannot simultaneously have a negative actual in Section C
-  const zeroCPActualAccounts = new Set(
-    items
-      .filter(i => /^Expense variance:/i.test(String(i)) && /Actual:\s*\$0\.00/i.test(String(i)))
-      .map(i => { const m = String(i).match(/\((\d{5}-\d{2}|[\d-]+)\)/); return m ? m[1] : null; })
-      .filter(Boolean)
-  );
-
-  // Valid account numbers for each Section A label — enforce regardless of what the model outputs
-  const validNSF        = /\b(42-)?30850-00\b/;
-  const validLeasing    = /\b(42-)?30450-00\b/;
-  const validCollection = /\b(42-)?30800-00\b/;
-  const validPool       = /\b(42-)?30700-00\b/;
-
-  const processed = items
-    .filter(item => {
-      const s = String(item);
-      // Remove any item containing zero-budget noise
-      if (zeroBudgetPattern.test(s)) return false;
-      // Enforce Section A account-number rules — drop bold items with wrong account numbers
-      if (/^\*\*NSF/i.test(s)             && !validNSF.test(s))        return false;
-      if (/^\*\*Leasing Fee/i.test(s)     && !validLeasing.test(s))    return false;
-      if (/^\*\*Collection Fee/i.test(s)  && !validCollection.test(s)) return false;
-      if (/^\*\*Pool & Gate Remotes/i.test(s) && !validPool.test(s))   return false;
-      // Remove Section C items that are actually income accounts (those belong in B2)
-      if (/^Negative expense:/i.test(s) && incomeAccountPattern.test(s)) return false;
-      // Section B2 negative income — no minimum threshold, all amounts reported
-      // Remove Section C items below $50 (likely positive-actual misreads)
-      if (/^Negative expense:/i.test(s)) {
-        const amtMatch = s.match(/\(\$?([\d,]+\.?\d*)\)/);
-        if (amtMatch && parseFloat(amtMatch[1].replace(/,/g, '')) < 50) return false;
-        // Remove if model reported a zero current-period budget (likely YTD misread)
-        const cpbMatch = s.match(/\[cpb:\$?([\d,]+\.?\d*)\]/i);
-        if (cpbMatch && parseFloat(cpbMatch[1].replace(/,/g, '')) === 0) return false;
-        // Remove if current-period variance is negative (actual > budget = over-budget account,
-        // meaning the model read the variance column as the actual instead of a true negative)
-        // Match [cpv:neg] or [cpv:negative] in case model uses the long form
-        if (/\[cpv:\s*neg/i.test(s)) return false;
-        // Fallback: if model omitted the cpv tag entirely but cpb is non-zero,
-        // the account has budget activity — require the tag to be present to pass
-        const hasCpvTag = /\[cpv:/i.test(s);
-        if (!hasCpvTag && cpbMatch && parseFloat(cpbMatch[1].replace(/,/g, '')) > 0) return false;
-        // Remove Section C items whose account also appears in Section D (actual is positive)
-        // or where Section D confirmed that account has $0 current-period actual
-        const acctMatch = s.match(/\((\d{5}-\d{2}|[\d-]+)\)/g);
-        if (acctMatch) {
-          const acct = acctMatch[acctMatch.length - 1].replace(/[()]/g, '');
-          if (sectionDAccounts.has(acct)) return false;
-          if (zeroCPActualAccounts.has(acct)) return false;
-        }
-      }
-      return true;
-    })
-    .filter(item => {
-      // Issue 5: remove variance items reporting <= 10% (AI threshold compliance)
-      const s = String(item);
-      if (/variance:/i.test(s)) {
-        const match = s.match(/Variance:\s*([-\d.]+)%/i);
-        if (match && Math.abs(parseFloat(match[1])) <= 10) return false;
-      }
-      // Remove Section D items where Budget is $0.00 (zero-budget slip-through)
-      if (/^Expense variance:/i.test(s) || /^Income variance:/i.test(s)) {
-        const budgetMatch = s.match(/Budget:\s*\$?([\d,]+\.?\d*)/i);
-        if (budgetMatch && parseFloat(budgetMatch[1].replace(/,/g, '')) === 0) return false;
-        // Remove variances where absolute dollar difference < $50
-        const actualMatch = s.match(/Actual:\s*\$?([\d,]+\.?\d*)/i);
-        if (actualMatch && budgetMatch) {
-          const actual = parseFloat(actualMatch[1].replace(/,/g, ''));
-          const budget = parseFloat(budgetMatch[1].replace(/,/g, ''));
-          if (Math.abs(actual - budget) < 50) return false;
-        }
-      }
-      return true;
-    })
-    .map(item => {
-      // Issue 2: ensure bare Section A items are bold — but NEVER wrap items that already
-      // carry a section prefix like "Negative income:", "Income variance:", etc.
-      let s = String(item);
-      const hasSectionPrefix = /^(Negative income|Income variance|Negative expense|Expense variance):/i.test(s);
-      if (sectionAPattern.test(s) && !s.startsWith('**') && !hasSectionPrefix) s = `**${s}**`;
-      // Normalize variance percentages to positive (e.g. -100.0% → 100.0%)
-      s = s.replace(/Variance:\s*-(\d+\.?\d*)%/g, 'Variance: $1%');
-      // Strip the [cpb:...] and [cpv:...] tags (used for filtering only, not displayed)
-      s = s.replace(/\s*\[cpb:[^\]]+\]/gi, '').replace(/\s*\[cpv:[^\]]+\]/gi, '');
-      return s;
-    });
-
-  // Deduplicate: drop "Negative income: [account]" items whose account number is
-  // already captured by a bold Section A item — avoids showing both in the accounting report.
-  const getAcct = s => { const m = String(s).match(/\b(\d{5}-\d{2})\b/); return m ? m[1] : null; };
-  const sectionAAccts = new Set(
-    processed.filter(i => /^\*\*/.test(String(i))).map(getAcct).filter(Boolean)
-  );
-  const deduped = processed.filter(item => {
-    const s = String(item);
-    if (/^Negative income:/i.test(s)) {
-      const acct = getAcct(s);
-      if (acct && sectionAAccts.has(acct)) return false;
-    }
-    return true;
-  });
-
-  return deduped.length === 0 ? ['OK'] : deduped;
+// Compare one balance-sheet column. Returns "OK", "Not provided", or the
+// difference. A column the statement does not have is not an imbalance.
+function checkBalanceColumn(col) {
+  if (!col || !isNum(col.totalAssets) || !isNum(col.totalLiabilitiesAndEquity)) return 'Not provided';
+  const diff = col.totalAssets - col.totalLiabilitiesAndEquity;
+  if (Math.abs(diff) < BALANCE_TOLERANCE) return 'OK';
+  return `Out of balance — Total Assets: ${money(col.totalAssets)}; `
+       + `Total Liabilities & Equity: ${money(col.totalLiabilitiesAndEquity)}; `
+       + `Difference: ${money(diff)}`;
 }
+
+function checkPrepaid(p) {
+  if (!p) return 'Not provided';
+  // Neither side reported at all - the package has no prepaid data to reconcile.
+  if (!isNum(p.balanceSheetAmount) && !isNum(p.homeownerListTotal)) return 'Not provided';
+  // One side absent means zero on that side, which is itself the discrepancy:
+  // prepaid sitting on the homeowner list with no matching balance-sheet
+  // liability is exactly what this reconciliation exists to catch.
+  const bsAmt = isNum(p.balanceSheetAmount) ? p.balanceSheetAmount : 0;
+  const listAmt = isNum(p.homeownerListTotal) ? p.homeownerListTotal : 0;
+  const diff = bsAmt - listAmt;
+  if (Math.abs(diff) < BALANCE_TOLERANCE) return 'OK';
+  return `Mismatch — Balance Sheet: ${money(bsAmt)}; `
+       + `PrePaid Homeowner List Total: ${money(listAmt)}; `
+       + `Difference: ${money(diff)}`;
+}
+
+// Percentage gap between actual and budget, always expressed positive.
+const variancePct = (actual, budget) => Math.abs((actual - budget) / budget) * 100;
+
+function buildIncomeStatementFindings(x) {
+  const items = [];
+  const sectionAAccounts = new Set();
+
+  // SECTION A — the four special income accounts, read from the income statement only.
+  for (const s of (x.specialIncome || [])) {
+    const prefix = String(s.accountNumber || '').split('-')[0];
+    const label = SECTION_A_ACCOUNTS[prefix];
+    if (!label || !isNum(s.currentPeriodActual)) continue;
+    sectionAAccounts.add(String(s.accountNumber));
+    // A dash in the Current Period Actual column is no activity this period. The
+    // amount may still be sitting in YTD from an earlier month, which is worth
+    // surfacing - but labelled as prior-period, not reported as this month's.
+    if (s.currentPeriodActual === 0) {
+      if (isNum(s.ytdActual) && s.ytdActual !== 0) {
+        items.push(`**${label}: ${s.accountNumber} (YTD ${signedAmount(s.ytdActual).slice(1, -1)}, no current-period activity)**`);
+      }
+      continue;
+    }
+    items.push(`**${label}: ${s.accountNumber} ${signedAmount(s.currentPeriodActual)}**`);
+  }
+
+  // SECTION B — income variances over threshold, budget must be positive.
+  for (const a of (x.incomeAccounts || [])) {
+    if (sectionAAccounts.has(String(a.accountNumber))) continue;
+    if (!isNum(a.currentPeriodActual) || !isNum(a.currentPeriodBudget)) continue;
+    if (a.currentPeriodBudget <= 0) continue;
+    const pct = variancePct(a.currentPeriodActual, a.currentPeriodBudget);
+    if (pct <= VARIANCE_PCT_THRESHOLD) continue;
+    if (Math.abs(a.currentPeriodActual - a.currentPeriodBudget) < VARIANCE_MIN_DOLLARS) continue;
+    items.push(`Income variance: ${a.accountName} (${a.accountNumber}) — `
+      + `Actual: ${money(a.currentPeriodActual)}, Budget: ${money(a.currentPeriodBudget)}, `
+      + `Variance: ${pct.toFixed(1)}%`);
+  }
+
+  // SECTION B2 — any negative income actual, no dollar floor. Income that was
+  // reversed or refunded is noteworthy at any size.
+  for (const a of (x.incomeAccounts || [])) {
+    if (sectionAAccounts.has(String(a.accountNumber))) continue;
+    if (!isNum(a.currentPeriodActual) || a.currentPeriodActual >= 0) continue;
+    items.push(`Negative income: ${a.accountName} (${a.accountNumber}) ${parenAmount(a.currentPeriodActual)}`);
+  }
+
+  // SECTION C — negative expense actuals. Only the actual column decides this;
+  // an over-budget expense has a negative *variance* but a positive actual.
+  for (const a of (x.expenseAccounts || [])) {
+    if (!isNum(a.currentPeriodActual) || a.currentPeriodActual >= 0) continue;
+    if (Math.abs(a.currentPeriodActual) < NEGATIVE_EXPENSE_MIN) continue;
+    items.push(`Negative expense: ${a.accountName} (${a.accountNumber}) ${parenAmount(a.currentPeriodActual)}`);
+  }
+
+  // SECTION D — expense variances over threshold and over the dollar floor.
+  for (const a of (x.expenseAccounts || [])) {
+    if (!isNum(a.currentPeriodActual) || !isNum(a.currentPeriodBudget)) continue;
+    if (a.currentPeriodBudget <= 0) continue;
+    if (a.currentPeriodActual < 0) continue; // already reported in Section C
+    const pct = variancePct(a.currentPeriodActual, a.currentPeriodBudget);
+    if (pct <= VARIANCE_PCT_THRESHOLD) continue;
+    if (Math.abs(a.currentPeriodActual - a.currentPeriodBudget) < VARIANCE_MIN_DOLLARS) continue;
+    items.push(`Expense variance: ${a.accountName} (${a.accountNumber}) — `
+      + `Actual: ${money(a.currentPeriodActual)}, Budget: ${money(a.currentPeriodBudget)}, `
+      + `Variance: ${pct.toFixed(1)}%`);
+  }
+
+  return items.length ? items : ['OK'];
+}
+
+// Turn one extraction into the four report fields.
+function buildFindings(x) {
+  const bs = x.balanceSheet || {};
+  let bsOperating = checkBalanceColumn(bs.operating);
+  const bsReserve = checkBalanceColumn(bs.reserve);
+
+  // Low Cash rides along in the Operating cell, as it has since v34.
+  const cash = bs.cashOperating, budget = x.annualIncomeBudget;
+  if (isNum(cash) && isNum(budget) && budget > 0) {
+    const ratio = cash / budget;
+    const flag = ratio < VERY_LOW_CASH_RATIO
+      ? `Very Low Cash (${money(cash)} balance, ${money(budget)} annual budget)`
+      : ratio < LOW_CASH_RATIO
+        ? `Low Cash (${money(cash)} balance, ${money(budget)} annual budget)`
+        : null;
+    if (flag) bsOperating = (bsOperating === 'OK') ? flag : bsOperating + ' | ' + flag;
+  }
+
+  return {
+    communityName: x.communityName || 'Unknown',
+    bsOperating,
+    bsReserve,
+    prepaid: checkPrepaid(x.prepaid),
+    incomeStatement: buildIncomeStatementFindings(x)
+  };
+}
+
+// ===== EXTRACTION =====
+
+// Static across every call, so it lives in `system` where it forms a cacheable
+// prefix (system renders before messages). The per-file document goes after it.
+const EXTRACTION_PROMPT = `You are transcribing figures from an HOA financial report package for PMI Northeast Atlanta. You are not judging anything: do not decide what is notable, do not apply thresholds, do not flag problems. Report the numbers exactly as printed. Downstream code applies all rules.
+
+BALANCE SHEET
+The balance sheet has an Operating column, sometimes a Reserve column, and a Total column. Record which of these columns actually exist in columnsPresent. For the Operating column, and the Reserve column when it exists, report the figure on the "Total: Assets" row and the figure on the "Total: Liabilities & Equity" row. If a column does not exist, set its figures to null. If the balance sheet is blank or has no figures at all, set every column to null and columnsPresent to [].
+Report the Operating and Reserve columns only; the Total column is not needed. Read each column independently and never copy the Total column's figures into Operating or Reserve.
+Also report cashOperating: the operating cash/checking balance from the Assets section of the Operating column ("Cash", "Checking", or a named bank account). Use the "Total: CASH" figure when present.
+
+PRE-PAID ASSESSMENTS
+balanceSheetAmount: the "Pre-Paid Assessments" figure on the balance sheet (Operating column). If the line is absent, null.
+homeownerListTotal: the total on the "PrePaid Homeowner List" report. This total is printed as a negative/parenthesised figure; report it as a POSITIVE number so it can be compared with the balance sheet line. If that report is not in the package, null and listPresent false.
+
+ANNUAL INCOME BUDGET
+annualIncomeBudget: on the income statement, find the "Total Operating Income" row and report the value in the rightmost column, the Annual Budget column. The row has seven values in this order: [1] Current Period Actual, [2] Current Period Budget, [3] Current Period Variance, [4] YTD Actual, [5] YTD Budget, [6] YTD Variance, [7] Annual Budget. Dashes count as positions. If absent, null.
+
+INCOME STATEMENT LINE ITEMS
+Every line item row has the same seven positions listed above. A dash means zero and still occupies a position — count carefully so values do not shift left.
+For every row report currentPeriodActual (position 1), currentPeriodBudget (position 2), and for expenses currentPeriodVariance (position 3).
+Parentheses mean negative: an actual printed as (850.00) is -850.00. A plain number is positive. Never convert a negative variance in position 3 into a negative actual in position 1 — they are different columns.
+
+Classify each row by the section heading it sits under:
+- incomeAccounts: rows under REVENUE, OTHER REVENUE, OPERATING INCOME.
+- expenseAccounts: rows under GENERAL/ADMINISTRATIVE, UTILITIES, LANDSCAPE MAINTENANCE, AMENITY EXPENSES, BUILDING MAINTENANCE, RESERVE EXPENSES, OPERATING EXPENSE, TOWNHOME EXPENSES, SINGLE FAMILY EXPENSES, ENTRANCE EXPENSES, SHARED AMENITY EXPENSES, SHARED EXPENSES, or any other expense heading.
+Include every line item row. Do not include subtotal or total rows.
+
+SPECIAL INCOME ACCOUNTS
+specialIncome: report a row here only if its account number begins with 30450, 30700, 30800 or 30850 AND it appears as a line item in the income statement's revenue section with a value in the Current Period Actual column. Report the Current Period Actual exactly, including zero and negative values, and also report ytdActual, the value in the YTD Actual column (position 4) for that same row.
+Never take these from anywhere else in the package — not cash disbursements, not invoice addenda, not AR aging, not transaction histories, not homeowner ledgers. A line such as "Addendum for 4/30/2026; Leasing Management Fee - $120.00 Account - ASHLX027" is a transaction detail, not an income statement row, and must be ignored. If one of these accounts does not appear as an income statement revenue row, omit it.
+A row also appearing in specialIncome should still be reported in incomeAccounts.
+
+Also report communityName exactly as printed on the report.`;
 
 // Hard ceiling on a single API call. Observed runs are 6-45s; a request that has
 // produced nothing after this long is hung, and without a timeout it would park
 // one of the CONCURRENCY workers for the rest of the batch.
-const API_TIMEOUT_MS = 180000;
+const API_TIMEOUT_MS = 300000;
+
+const MODEL = 'claude-opus-5';
+
+const ACCOUNT_ITEM_SCHEMA = {
+  type: 'object',
+  properties: {
+    accountNumber: { type: 'string' },
+    accountName: { type: 'string' },
+    currentPeriodActual: { type: ['number', 'null'] },
+    currentPeriodBudget: { type: ['number', 'null'] }
+  },
+  required: ['accountNumber', 'accountName', 'currentPeriodActual', 'currentPeriodBudget'],
+  additionalProperties: false
+};
+// Section A also carries YTD so a prior-period item still sitting in the
+// year-to-date column can be surfaced without being mistaken for this month's.
+const SPECIAL_INCOME_SCHEMA = {
+  type: 'object',
+  properties: {
+    accountNumber: { type: 'string' },
+    accountName: { type: 'string' },
+    currentPeriodActual: { type: ['number', 'null'] },
+    ytdActual: { type: ['number', 'null'] }
+  },
+  required: ['accountNumber', 'accountName', 'currentPeriodActual', 'ytdActual'],
+  additionalProperties: false
+};
+const BALANCE_COLUMN_SCHEMA = {
+  type: 'object',
+  properties: {
+    totalAssets: { type: ['number', 'null'] },
+    totalLiabilitiesAndEquity: { type: ['number', 'null'] }
+  },
+  required: ['totalAssets', 'totalLiabilitiesAndEquity'],
+  additionalProperties: false
+};
+const EXTRACTION_SCHEMA = {
+  type: 'object',
+  properties: {
+    communityName: { type: 'string' },
+    balanceSheet: {
+      type: 'object',
+      properties: {
+        columnsPresent: { type: 'array', items: { type: 'string', enum: ['operating', 'reserve', 'total'] } },
+        operating: BALANCE_COLUMN_SCHEMA,
+        reserve: BALANCE_COLUMN_SCHEMA,
+        cashOperating: { type: ['number', 'null'] }
+      },
+      required: ['columnsPresent', 'operating', 'reserve', 'cashOperating'],
+      additionalProperties: false
+    },
+    prepaid: {
+      type: 'object',
+      properties: {
+        listPresent: { type: 'boolean' },
+        balanceSheetAmount: { type: ['number', 'null'] },
+        homeownerListTotal: { type: ['number', 'null'] }
+      },
+      required: ['listPresent', 'balanceSheetAmount', 'homeownerListTotal'],
+      additionalProperties: false
+    },
+    annualIncomeBudget: { type: ['number', 'null'] },
+    specialIncome: { type: 'array', items: SPECIAL_INCOME_SCHEMA },
+    incomeAccounts: { type: 'array', items: ACCOUNT_ITEM_SCHEMA },
+    expenseAccounts: { type: 'array', items: ACCOUNT_ITEM_SCHEMA }
+  },
+  required: ['communityName', 'balanceSheet', 'prepaid', 'annualIncomeBudget', 'specialIncome', 'incomeAccounts', 'expenseAccounts'],
+  additionalProperties: false
+};
 
 // One Claude call. Classifies failures into a `kind` the retry loop can act on,
 // instead of leaving the caller to string-match an error message.
-async function callClaude(base64, prompt) {
+async function callClaude(base64, userText) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
   let response;
@@ -737,13 +870,19 @@ async function callClaude(base64, prompt) {
         'anthropic-dangerous-direct-browser-access': 'true'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 8192,
+        model: MODEL,
+        max_tokens: 16000,
+        // Identical on every call, so it caches; the document below it varies.
+        system: [{ type: 'text', text: EXTRACTION_PROMPT, cache_control: { type: 'ephemeral' } }],
+        output_config: {
+          effort: 'high',
+          format: { type: 'json_schema', schema: EXTRACTION_SCHEMA }
+        },
         messages: [{
           role: 'user',
           content: [
             { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
-            { type: 'text', text: prompt }
+            { type: 'text', text: userText }
           ]
         }]
       })
@@ -763,242 +902,95 @@ async function callClaude(base64, prompt) {
     try { const body = await response.json(); apiMsg = body.error?.message || ''; } catch (_) {}
     const err = new Error(apiMsg || `API error (HTTP ${response.status})`);
     err.status = response.status;
-    // Anthropic sends retry-after on 429; honour it rather than guessing.
     const retryAfter = parseInt(response.headers.get('retry-after') || '', 10);
     if (!isNaN(retryAfter)) err.retryAfterMs = retryAfter * 1000;
     err.kind =
       response.status === 429 ? 'rate-limit' :
       response.status === 529 || response.status >= 500 ? 'overloaded' :
       response.status === 413 || /too long/i.test(apiMsg) ? 'too-large' :
-      'api-error';   // 400/401/403 etc — deterministic, not worth retrying
+      'api-error';
     throw err;
   }
 
   const data = await response.json();
-  return data.content.map(i => i.text || '').join('');
+  if (data.stop_reason === 'refusal') {
+    const err = new Error('Claude declined to process this document.');
+    err.kind = 'api-error';
+    throw err;
+  }
+  if (data.stop_reason === 'max_tokens') {
+    const err = new Error('Response hit the output limit before completing — the statement may have an unusually long income statement.');
+    err.kind = 'bad-format';
+    throw err;
+  }
+  return {
+    raw: data.content.map(i => i.text || '').join(''),
+    usage: data.usage || {}
+  };
+}
+
+// The JSON schema makes the response machine-validated, so a direct parse
+// normally succeeds. This stays as a backstop for a response that arrives
+// wrapped in stray text.
+function extractJSON(text) {
+  const stripped = String(text).replace(/```json|```/g, '').trim();
+  try { return JSON.parse(stripped); } catch (_) {}
+  const start = stripped.indexOf('{');
+  if (start !== -1) {
+    let depth = 0, inString = false, escape = false;
+    for (let i = start; i < stripped.length; i++) {
+      const ch = stripped[i];
+      if (escape) { escape = false; continue; }
+      if (ch === '\\') { escape = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          try { return JSON.parse(stripped.slice(start, i + 1)); } catch (_) {}
+          break;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 async function analyzePDF(file, monthDisplay) {
   const { base64, pageCount, truncated } = await toBase64(file);
-  const truncationNote = truncated ? `\n\nNOTE: This document was ${pageCount} pages. Only the first ${MAX_PAGES} pages have been provided for analysis.` : '';
-  const prompt = `You are an expert HOA financial analyst for PMI Northeast Atlanta. Report period: ${monthDisplay}.${truncationNote}
+  const truncationNote = truncated
+    ? ` NOTE: this document was ${pageCount} pages; only the first ${MAX_PAGES} pages are provided.`
+    : '';
+  const userText = `Report period: ${monthDisplay}.${truncationNote} Extract the figures from this package.`;
 
-CRITICAL OUTPUT RULE: You must respond with ONLY a valid JSON object. No prose, no steps, no explanations, no markdown. Your entire response must be parseable by JSON.parse(). Any other format will cause a system failure.
+  const first = await callClaude(base64, userText);
+  let parsed = extractJSON(first.raw);
+  let lastRaw = first.raw;
+  let usage = first.usage;
 
-Analyze this HOA financial report package and perform the following checks:
-
-STEP 1 – BALANCE SHEET REVIEW:
-The balance sheet has three columns: Operating, Reserve, and Total. Check Operating and Reserve INDEPENDENTLY of each other — do not use whether the Total column balances as evidence that Operating or Reserve balance. A balanced Total column does NOT mean Operating and Reserve are each individually balanced: it is common for a misclassified amount to make Operating overstated and Reserve understated (or vice versa) by the exact same dollar amount, which cancels out in Total while both Operating and Reserve are genuinely out of balance. You must catch this case.
-
-For the Operating column: take the "Total: Assets" value from the Operating column and the "Total: Liabilities & Equity" value from the Operating column. Subtract one from the other.
-  - Difference is $0.00 (or under $1 rounding) → bsOperating = "OK".
-  - Otherwise → bsOperating = "Out of balance — Total Assets: $X; Total Liabilities & Equity: $Y; Difference: $Z" using the actual Operating-column figures.
-
-For the Reserve column: do the exact same subtraction using only the Reserve column's "Total: Assets" and "Total: Liabilities & Equity" values, independent of the Operating check above.
-  - Difference is $0.00 (or under $1 rounding) → bsReserve = "OK".
-  - Otherwise → bsReserve = "Out of balance — Total Assets: $X; Total Liabilities & Equity: $Y; Difference: $Z" using the actual Reserve-column figures.
-
-Do this arithmetic explicitly for both columns even if it looks like the document balances overall — never skip either check.
-
-CASH EXTRACTION (report as separate fields, do NOT factor into bsOperating):
-Extract these two numbers and report them in the JSON as cashBalance and annualIncomeBudget:
-- cashBalance: the main operating checking/cash account balance from the balance sheet operating column (look for a line labeled "Cash", "Checking", or a specific bank account name in the Assets section). Report as a plain number, no $ or commas (e.g. 37908.84).
-- annualIncomeBudget: find the "Total Operating Income" subtotal row on the income statement. Report the value from the rightmost column ONLY — this is the 7th column, the Annual Budget column. Count carefully: the columns are [1] Current Period Actual, [2] Current Period Budget, [3] Variance, [4] YTD Actual, [5] YTD Budget, [6] YTD Variance, [7] Annual Budget. Many income rows show a dash (–) in columns [2] and [3]; do not let that shift your column count. The Annual Budget (column 7) is always the rightmost number on the row. Report as a plain number, no $ or commas (e.g. 111000.00).
-If either value cannot be found, report null for that field.
-
-STEP 2 – PRE-PAID ASSESSMENT RECONCILIATION:
-- Compare Balance Sheet "Pre-Paid Assessments" line to the total on the Pre-Paid Homeowners list.
-- Match → "OK". Mismatch → report both figures. Not present in document → "Not provided".
-
-STEP 3 – INCOME STATEMENT REVIEW:
-Use ONLY the CURRENT PERIOD ACTUAL column (the first column of numbers). Never use variance, year-to-date, or budget columns to determine whether a value is negative.
-
-Before classifying any account, determine whether it is an INCOME account or an EXPENSE account based on its section heading in the income statement. Income accounts appear under headings like REVENUE, OTHER REVENUE, OPERATING INCOME. Expense accounts appear under headings like GENERAL/ADMINISTRATIVE, UTILITIES, LANDSCAPE, AMENITY EXPENSES, BUILDING MAINTENANCE, RESERVE EXPENSES, OPERATING EXPENSE, TOWNHOME EXPENSES, SINGLE FAMILY EXPENSES, ENTRANCE EXPENSES, SHARED AMENITY EXPENSES, SHARED EXPENSES.
-
-Produce findings in this exact order. Each finding is a separate string in the JSON array.
-
-SECTION A — SPECIAL INCOME ITEMS (always list these first):
-Report ONLY these four account numbers if they appear as a line item in the INCOME STATEMENT (Revenue/Income section) with a non-zero Current Period Actual value.
-CRITICAL: Only read these accounts from the income statement revenue rows. NEVER report them if the account number appears anywhere else in the document, including:
-  • Invoice line items or addenda (lines containing "Addendum", "Invoice:", "Leasing Management Fee - $", or unit/owner account codes like "Account - XXXNNN")
-  • AR aging reports or homeowner ledger details
-  • Transaction histories or payment records
-  • Any section with a header other than REVENUE / INCOME
-A valid income statement row looks like: "Account Name   [account#]   $X.XX   $X.XX   ($X.XX)   ..."  with multiple dollar columns.
-A transaction detail line (NOT valid) looks like: "Addendum for 4/30/2026; Leasing Management Fee - $120.00 Account - ASHLX027" — this must be IGNORED.
-- Account 30850-00 or 42-30850-00 (NSF): format as "**NSF Charges: [account] ($X.XX)**"
-  PAGE RESTRICTION: NSF fees are ONLY relevant when found on the income statement, which appears on page 3 of the report. NSF-related entries found on any other page (bank statements, transaction histories, check registers, notes pages, etc.) must be completely ignored — do not report NSF from any page other than page 3.
-- Account 30450-00 or 42-30450-00 (Leasing Fee): format as "**Leasing Fee Income: [account] ($X.XX)**"
-- Account 30800-00 or 42-30800-00 (Collection Fee): format as "**Collection Fee Income: [account] ($X.XX)**"
-- Account 30700-00 or 42-30700-00 (Pool & Gate Remotes): format as "**Pool & Gate Remotes: [account] ($X.XX)**"
-  SOURCE RESTRICTION: Pool & Gate Remotes are ONLY relevant when account 30700-00 appears as a line item in the INCOME STATEMENT revenue rows with a non-zero Current Period Actual (column [1]). Never report this account if it appears anywhere else in the document — not on cash disbursement pages, expense sections, vendor invoices, transaction histories, or any page other than the income statement. Use ONLY the Current Period Actual column value; do not report based on any other column.
-These MUST be wrapped in ** ** for bold rendering. Do not include any other accounts in Section A, regardless of account name or activity type.
-
-SECTION B — NOTABLE INCOME VARIANCES:
-Only report INCOME accounts (Revenue section) where ALL of these are true:
-- The Current Period Budget is greater than zero
-- The variance between Current Period Actual and Current Period Budget exceeds 10%
-- The account is NOT one already reported in Section A
-STRICT RULE: Skip entirely if Current Period Budget is zero or blank. Do not report "infinite variance" or "no budget set" items.
-Format: "Income variance: [account name] ([account #]) — Actual: $X.XX, Budget: $X.XX, Variance: X.X%"
-
-SECTION B2 — NEGATIVE INCOME ACTUALS:
-Report ANY INCOME account (in REVENUE or OTHER REVENUE sections) where the Current Period Actual is itself a negative number (shown in parentheses), regardless of the budget amount or dollar size.
-A negative income actual means income was reversed or refunded — this is ALWAYS noteworthy no matter the amount.
-Report ALL of them — there is NO minimum dollar threshold for this section.
-SKIP accounts already reported in Section A.
-Do NOT confuse a negative variance with a negative actual — apply the same column-position test as Section C: only position [1] (the Current Period Actual) matters.
-Examples:
-  Fine Reimbursement row: (850.00) - (850.00) 650.00 - 650.00 - → pos[1]=(850.00) negative → REPORT.
-  Late Fee Reversal row:  (75.00) - (75.00) 150.00 - 150.00 - → pos[1]=(75.00) negative → REPORT.
-Format: "Negative income: [account name] ([account #]) ($X.XX)"
-
-SECTION C — NEGATIVE EXPENSE ACTUALS:
-CRITICAL RULE: This section evaluates ONLY the Current Period Actual column (position [1]). The Variance column (position [3]) is NEVER used to determine if an expense is negative. An expense that is over-budget will have a negative variance but a POSITIVE actual — that must NOT be reported here. Only report EXPENSE accounts where the Current Period Actual itself (position [1]) is a negative number (shown in parentheses in the Actual column).
-
-COLUMN POSITIONS — each row has exactly 7 values in this order:
-  [1] Current Period Actual  [2] Current Period Budget  [3] Current Period Variance
-  [4] YTD Actual             [5] YTD Budget             [6] YTD Variance  [7] Annual Budget
-Dashes (-) count as position holders (value = zero). Count every value including dashes.
-
-ELIGIBILITY TEST — for each account, identify position [1] (the Current Period Actual):
-  • If position [1] is a dash or zero → Actual is zero → SKIP. A zero actual cannot be negative.
-  • If position [1] is a positive number → Actual is positive → SKIP.
-  • If position [1] is in parentheses → Actual is negative → REPORT.
-
-COMMON MISREADS TO AVOID:
-  675.00    425.00  (250.00)  ...              → pos[1]=675.00 (positive) → SKIP. The (250.00) is position [3] Variance.
-  2,750.00  1,650.00  (1,100.00)  ...         → pos[1]=2,750.00 (positive) → SKIP. The (1,100.00) is position [3] Variance.
-  205.39    130.00   (75.39)   ...            → pos[1]=205.39 (positive) → SKIP. The (75.39) is position [3] Variance.
-  -         250.00   250.00  3,600.00  750.00  (2,850.00)  → pos[1]=dash (zero) → SKIP. The (2,850.00) is position [6] YTD Variance.
-  (100.00)  125.00   225.00  ...             → pos[1]=(100.00) (negative) → REPORT.
-
-SKIP any account where: (a) the Budget column is in parentheses (credit budget); (b) the Variance is negative but the Actual is positive.
-Do NOT include income accounts (30xxx, 42-30xxx accounts) here.
-REQUIRED TAGS — you MUST include both tags on every Section C entry or the entry will be rejected by the system:
-  [cpb:$Y.YY] = Current Period Budget amount from position [2] (use $0.00 if budget is a dash or zero)
-  [cpv:neg]   = position [3] Variance has parentheses around it, e.g. (75.39) or (523.00) → tag is [cpv:neg]
-  [cpv:pos]   = position [3] Variance is a plain number or dash with NO parentheses, e.g. 225.00 or - → tag is [cpv:pos]
-  IMPORTANT: parentheses around the variance number = [cpv:neg]. Do NOT strip the parentheses and treat the number as positive.
-  Example: 205.39  130.00  (75.39)  → pos[1]=205.39 positive → SKIP entirely. But if somehow reported, cpv tag would be [cpv:neg] because (75.39) has parentheses.
-Format: "Negative expense: [account name] ([account #]) ($X.XX) [cpb:$Y.YY] [cpv:pos|neg]"
-
-SECTION D — NOTABLE EXPENSE VARIANCES:
-COLUMN REMINDER: The columns in order are Actual | Budget | Variance | YTD Actual | YTD Budget | YTD Variance | Annual Budget.
-Report Actual from column 1 and Budget from column 2. NEVER report the Variance column (column 3) as the Actual. The Actual is always the FIRST number on the row.
-Examples of correct column reading:
-  198.04   50.00   (148.04)  ...  → Actual=$198.04, Budget=$50.00  (NOT $148.04)
-  786.97  270.00   (516.97)  ...  → Actual=$786.97, Budget=$270.00  (NOT $516.97)
-  1,893.75  2,208.33  314.58  ...  → Actual=$1,893.75, Budget=$2,208.33  (NOT $314.58)
-
-Only report EXPENSE accounts where ALL of these are true:
-- The Current Period Budget is a positive number greater than zero
-- The variance between Actual and Budget exceeds 10%
-- The absolute dollar difference between Actual and Budget is $50.00 or more
-SKIP any account where the Budget is zero, blank, or shown in parentheses (credit budget).
-SKIP any account where the absolute dollar difference is less than $50, even if the percentage is large.
-Include accounts where Actual is $0 — a $0 actual against a budget of $50+ is a reportable variance.
-Always express variance as a positive percentage. Format: "Expense variance: [account name] ([account #]) — Actual: $X.XX, Budget: $X.XX, Variance: X.X%"
-
-IMPORTANT RULES THAT APPLY TO ALL SECTIONS:
-- ABSOLUTE RULE: If the Current Period Budget for any account is zero, blank, or not set, you MUST skip that account completely. Do not include it. Do not write "N/A", "Infinite%", "Cannot calculate", "no budget", "budget is zero", "budget not set", or any similar phrase. Omit the account entirely as if it does not exist.
-- Never report any item with a zero Current Period Budget in Section B or D
-- Never report "infinite variance", "no budget", "budget is zero", or "N/A variance" items
-- Never classify an income account as a negative expense
-- Section A items MUST use ** ** bold markers
-- If all four sections are empty → return ["OK"]
-
-Extract the community/association name from the document.
-
-Respond ONLY with valid JSON, no markdown fences:
-{
-  "communityName": "Full association name from document",
-  "bsOperating": "OK or issue description",
-  "bsReserve": "OK or issue description",
-  "prepaid": "OK or issue description",
-  "cashBalance": 37908.84,
-  "annualIncomeBudget": 111000.00,
-  "incomeStatement": ["OK"] or ["**NSF Charges: 30850-00 ($25.00)**", "Income variance: ...", "Negative income: ...", "Negative expense: ...", "Expense variance: ..."]
-}`;
-
-  const raw = await callClaude(base64, prompt);
-
-  // Extract JSON object — handles extra text Claude sometimes adds before/after the object
-  function extractJSON(text) {
-    const stripped = text.replace(/```json|```/g, '').trim();
-    // Try direct parse first
-    try { return JSON.parse(stripped); } catch (_) {}
-    // Fall back: scan for a balanced {...} block, ignoring braces inside string literals —
-    // more robust than a greedy regex when the model wraps the JSON in extra prose.
-    const start = stripped.indexOf('{');
-    if (start !== -1) {
-      let depth = 0, inString = false, escape = false;
-      for (let i = start; i < stripped.length; i++) {
-        const ch = stripped[i];
-        if (escape) { escape = false; continue; }
-        if (ch === '\\') { escape = true; continue; }
-        if (ch === '"') { inString = !inString; continue; }
-        if (inString) continue;
-        if (ch === '{') depth++;
-        else if (ch === '}') {
-          depth--;
-          if (depth === 0) {
-            try { return JSON.parse(stripped.slice(start, i + 1)); } catch (_) {}
-            break;
-          }
-        }
-      }
-    }
-    return null;
-  }
-
-  let parsed = extractJSON(raw);
-  let lastRaw = raw;
-
-  // If parse failed, re-ask once before giving up. A status error on this second
-  // call (rate limit, overload, timeout) now propagates with its own kind rather
-  // than being swallowed and mislabelled as a formatting problem.
+  // With a JSON schema the response is machine-validated, so this should never
+  // fire; kept as a backstop rather than a routine path.
   if (!parsed) {
-    const retryRaw = await callClaude(base64, prompt);
-    parsed = extractJSON(retryRaw);
-    lastRaw = retryRaw;
+    const second = await callClaude(base64, userText);
+    parsed = extractJSON(second.raw);
+    lastRaw = second.raw;
+    usage = second.usage;
   }
 
   if (!parsed) {
-    // Include a snippet of what Claude actually returned so a repeated failure is diagnosable
-    // without needing to reproduce it — this shows up in the Excel error cell / Performance Log.
     const snippet = lastRaw.slice(0, 250).replace(/\s+/g, ' ').trim();
     const err = new Error(`Claude returned an unexpected (non-JSON) response for this file — re-run to retry. Response started with: "${snippet}${lastRaw.length > 250 ? '…' : ''}"`);
     err.kind = 'bad-format';
     throw err;
   }
-  if (Array.isArray(parsed.incomeStatement)) {
-    parsed.incomeStatement = postProcessIncomeStatement(parsed.incomeStatement);
-  }
 
-  // Low Cash check — computed in JS from AI-extracted raw numbers to avoid AI column-reading errors
-  const cashBal  = typeof parsed.cashBalance === 'number' ? parsed.cashBalance : null;
-  const annualBdg = typeof parsed.annualIncomeBudget === 'number' ? parsed.annualIncomeBudget : null;
-  if (cashBal !== null && annualBdg !== null && annualBdg > 0) {
-    const ratio = cashBal / annualBdg;
-    const fmt = n => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    const cashFlag = ratio < 0.10
-      ? `Very Low Cash (${fmt(cashBal)} balance, ${fmt(annualBdg)} annual budget)`
-      : ratio < 0.20
-        ? `Low Cash (${fmt(cashBal)} balance, ${fmt(annualBdg)} annual budget)`
-        : null;
-    if (cashFlag) {
-      parsed.bsOperating = isOK(parsed.bsOperating)
-        ? cashFlag
-        : parsed.bsOperating + ' | ' + cashFlag;
-    }
-  }
-  delete parsed.cashBalance;
-  delete parsed.annualIncomeBudget;
-
-  parsed.__pageCount = pageCount;
-  parsed.__truncated = truncated;
-  return parsed;
+  const result = buildFindings(parsed);
+  result.__pageCount = pageCount;
+  result.__truncated = truncated;
+  result.__usage = usage;
+  result.__extracted = parsed;   // kept for diagnostics; stripped before display
+  return result;
 }
 
 let globalResults = [], globalMonth = '', perfLog = [];
@@ -1038,6 +1030,7 @@ document.getElementById('runBtn').addEventListener('click', async () => {
       fileName: item.file.name, fileSizeKB: Math.round(item.file.size / 1024),
       startTime: new Date().toLocaleTimeString(), startMs: Date.now(),
       endMs: null, durationSecs: null, attempts: 0, retries: 0, retryReasons: [],
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
       outcome: 'pending', pageCount: null, truncated: false
     };
     item.status = 'processing';
@@ -1051,7 +1044,12 @@ document.getElementById('runBtn').addEventListener('click', async () => {
         const _res = await analyzePDF(item.file, monthDisplay);
         fileLog.pageCount = _res.__pageCount;
         fileLog.truncated = _res.__truncated || false;
+        const u = _res.__usage || {};
+        fileLog.inputTokens = u.input_tokens || 0;
+        fileLog.outputTokens = u.output_tokens || 0;
+        fileLog.cacheReadTokens = u.cache_read_input_tokens || 0;
         delete _res.__pageCount; delete _res.__truncated;
+        delete _res.__usage; delete _res.__extracted;
         item.result = _res;
         item.status = 'done';
         fileLog.outcome = 'success';
@@ -1357,10 +1355,10 @@ async function buildExcelWorkbook(reportType) {
         Object.assign(pr.getCell(1), { font: { name: 'Arial', size: 10, color: { argb: 'FF444444' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: LTBG } }, alignment: { horizontal: 'left', vertical: 'middle' } });
       });
       ws2.addRow([]);
-      const ph = ws2.addRow(['File Name','File Size (KB)','Page Count','Truncated to 99','Start Time','Duration (secs)','Attempts','Retries','Retry Reasons','Between-File Pause (secs)','Outcome']);
+      const ph = ws2.addRow(['File Name','File Size (KB)','Page Count','Truncated to 99','Start Time','Duration (secs)','Attempts','Retries','Retry Reasons','Input Tokens','Output Tokens','Cached Tokens','Between-File Pause (secs)','Outcome']);
       ph.height = 18; ph.eachCell(cell => hdrCell(cell));
       perfLog.forEach(r => {
-        const pr = ws2.addRow([r.fileName, r.fileSizeKB, r.pageCount || 'unknown', r.truncated ? 'YES' : 'no', r.startTime, r.durationSecs, r.attempts, r.retries, (r.retryReasons || []).join(', '), r.betweenFilePauseSecs, r.outcome]);
+        const pr = ws2.addRow([r.fileName, r.fileSizeKB, r.pageCount || 'unknown', r.truncated ? 'YES' : 'no', r.startTime, r.durationSecs, r.attempts, r.retries, (r.retryReasons || []).join(', '), r.inputTokens, r.outputTokens, r.cacheReadTokens, r.betweenFilePauseSecs, r.outcome]);
         pr.eachCell((cell, col) => { cell.font = { name: 'Arial', size: 10 }; if (col > 1) cell.alignment = { horizontal: 'center' }; });
         const oc = pr.getCell(10);
         oc.font = { name: 'Arial', size: 10, color: { argb: r.outcome === 'success' ? OK_FONT : CRIT_FONT } };
