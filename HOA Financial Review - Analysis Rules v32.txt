@@ -1,0 +1,319 @@
+HOA FINANCIAL REVIEW — ANALYSIS RULES (v32)
+PMI Northeast Atlanta
+============================================================
+
+
+OVERVIEW
+--------
+For each HOA financial report PDF uploaded, the system reads the document
+using AI and checks five areas. The results are displayed in a table with
+one row per community. Each row has five columns:
+
+  • Community Name
+  • BS Operating
+  • BS Reserve
+  • Pre-Paid Reconciliation
+  • Income Statement Review
+
+Each row is color-coded: red border = Critical, yellow = Warning, green = OK.
+
+
+============================================================
+CHECK 1 — BALANCE SHEET: OPERATING COLUMN
+============================================================
+
+Confirm that Total Operating Assets = Total Operating Liabilities + Equity.
+
+  • If balanced, proceed to the Low Cash Check below.
+  • If not balanced, report both totals and the dollar difference.
+    Then still perform the Low Cash Check and combine both results if needed.
+
+
+LOW CASH CHECK (part of the BS Operating result)
+-------------------------------------------------
+After confirming the balance, look up two numbers:
+
+  1. The operating cash or checking account balance from the balance sheet
+     operating column.
+  2. The Total Annual Income Budget — the Total Operating Income value in the "Annual Budget" column
+   
+
+Divide the cash balance by the annual income budget to get a ratio:
+
+  Less than 10%        → "Very Low Cash ($X.XX balance, $Y.YY annual budget)"
+                          Displays in RED — status = CRITICAL
+  Between 10% and 20%  → "Low Cash ($X.XX balance, $Y.YY annual budget)"
+                          Displays in YELLOW — status = WARNING
+  20% or more          → No cash flag
+
+Combine the balance sheet result and cash flag as follows:
+
+  BS Balanced + No Cash Flag          → "OK"
+  BS Balanced + Cash Flag             → Just the cash flag string
+  BS Not Balanced + No Cash Flag      → Just the imbalance description
+  BS Not Balanced + Cash Flag         → Imbalance description + " | " + cash flag
+
+
+============================================================
+CHECK 2 — BALANCE SHEET: RESERVE COLUMN
+============================================================
+
+Confirm that Total Reserve Assets = Total Reserve Liabilities + Equity.
+
+  • Balanced → "OK"
+  • Not balanced → report both totals and the dollar difference → CRITICAL
+
+
+============================================================
+CHECK 3 — PRE-PAID ASSESSMENT RECONCILIATION
+============================================================
+
+Compare the "Pre-Paid Assessments" line on the balance sheet to the total
+shown on the Pre-Paid Homeowners list (a separate schedule in the report).
+
+  • Match → "OK"
+  • Mismatch → report both figures → CRITICAL
+  • Not present in the document → "Not provided"
+
+
+============================================================
+CHECK 4 — INCOME STATEMENT REVIEW
+============================================================
+
+This produces a list of findings across five sub-sections (A, B, B2, C, D),
+always reported in that order.
+
+GOLDEN RULE FOR ALL INCOME STATEMENT WORK:
+Use ONLY the Current Period Actual column (the first column of numbers on
+every row). Never use the variance column, YTD column, or budget column to
+decide whether a number is negative.
+
+Column order is always:
+  [1] Current Period Actual
+  [2] Current Period Budget
+  [3] Current Period Variance
+  [4] YTD Actual
+  [5] YTD Budget
+  [6] YTD Variance
+  [7] Annual Budget
+
+Dashes (–) count as placeholders and equal zero. Count every value including
+dashes to determine column position.
+
+Before analyzing any account, determine whether it is an INCOME account or
+an EXPENSE account based on its section heading:
+
+  Income accounts appear under: REVENUE, OTHER REVENUE, OPERATING INCOME
+  Expense accounts appear under: GENERAL/ADMINISTRATIVE, UTILITIES,
+    LANDSCAPE, AMENITY EXPENSES, BUILDING MAINTENANCE, RESERVE EXPENSES,
+    OPERATING EXPENSE, TOWNHOME EXPENSES, SINGLE FAMILY EXPENSES,
+    ENTRANCE EXPENSES, SHARED AMENITY EXPENSES, SHARED EXPENSES
+
+
+------------------------------------------------------------
+SECTION A — SPECIAL INCOME ITEMS (always reported first)
+------------------------------------------------------------
+
+Report ONLY these FOUR specific account numbers if they appear as a line
+item in the income statement's Revenue/Income section with a non-zero
+Current Period Actual.
+
+CRITICAL SOURCE RESTRICTION: These accounts must only be read from income
+statement revenue rows. Never report them if the account number appears
+anywhere else in the document — not in invoice line items, addenda, AR
+aging reports, homeowner ledger details, transaction histories, or any
+section not headed REVENUE / INCOME.
+
+A valid income statement row looks like:
+  Account Name   [account#]   $X.XX   $X.XX   ($X.XX)   ...
+  (multiple dollar columns side by side)
+
+An invalid transaction detail line looks like:
+  "Addendum for 4/30/2026; Leasing Management Fee - $120.00 Account - ASHLX027"
+  — IGNORE THIS
+
+THE FOUR ACCOUNTS:
+
+1. NSF Charges — account 30850-00 or 42-30850-00
+   PAGE RESTRICTION: NSF is only valid when found on the income statement,
+   which is on PAGE 3 of the report. NSF entries found on any other page
+   (bank statements, transaction histories, check registers, notes) must be
+   completely ignored.
+   Displayed in: bold red
+
+2. Leasing Fee Income — account 30450-00 or 42-30450-00
+   Displayed in: bold red
+
+3. Collection Fee Income — account 30800-00 or 42-30800-00
+   Displayed in: bold red
+
+4. Pool & Gate Remotes - ACCOUNT 30700-00 OR 42-30700-00 
+   Displayed in: bold red
+
+If none of these FOUR accounts have activity, Section A produces no output.
+
+
+------------------------------------------------------------
+SECTION B — NOTABLE INCOME VARIANCES
+------------------------------------------------------------
+
+Report income accounts where ALL THREE of the following are true:
+  1. The Current Period Budget is greater than zero
+  2. The variance between Current Period Actual and Budget exceeds 10%
+  3. The account was not already reported in Section A
+
+SKIP any account where the Current Period Budget is zero, blank, or not set —
+no matter how large the actual amount is. Never write "infinite variance,"
+"no budget set," or similar phrases. Omit the account entirely.
+
+Displayed in: yellow
+
+
+------------------------------------------------------------
+SECTION B2 — NEGATIVE INCOME ACTUALS
+------------------------------------------------------------
+
+Report ANY income account (in REVENUE or OTHER REVENUE sections) where the
+Current Period Actual (position [1]) is itself a negative number — shown in
+parentheses.
+
+  • A negative income actual means income was reversed or refunded.
+  • Report ALL of them. There is NO minimum dollar threshold — even $1.00
+    must be reported.
+  • Skip accounts already reported in Section A.
+  • Do NOT confuse a negative variance with a negative actual.
+    Only position [1] matters. If position [1] is positive and position [3]
+    is in parentheses, that is an over-budget variance — do not report it here.
+
+Example rows:
+  Fine Reimbursement:   (850.00) – (850.00) 650.00 – 650.00 –
+    → pos[1] = (850.00) negative → REPORT
+
+  Pool & Gate Remotes:  (25.00) – (25.00) 25.00 – 25.00 –
+    → pos[1] = (25.00) negative → REPORT
+
+Displayed in: yellow/orange bold
+
+
+------------------------------------------------------------
+SECTION C — NEGATIVE EXPENSE ACTUALS
+------------------------------------------------------------
+
+CRITICAL RULE: This section evaluates ONLY the Current Period Actual column
+(position [1]). The Variance column (position [3]) is never used to determine
+if an expense is negative. An expense that is over-budget will have a negative
+variance but a POSITIVE actual — do not report it here.
+
+Report expense accounts where position [1] — the Current Period Actual —
+is itself a negative number (shown in parentheses).
+
+HOW TO READ EACH ROW:
+  Position [1] is a dash or zero   → Actual is zero → SKIP
+  Position [1] is a positive number → Actual is positive → SKIP
+  Position [1] is in parentheses   → Actual is negative → REPORT
+
+COMMON MISREADS TO AVOID:
+  675.00   425.00   (250.00) ...    → pos[1]=675.00 positive → SKIP
+                                      The (250.00) is the Variance column
+  –   250.00   250.00   3,600   750   (2,850) ...
+                                    → pos[1]=dash (zero) → SKIP
+                                      The (2,850) is YTD Variance
+  (100.00)   125.00   225.00 ...   → pos[1]=(100.00) negative → REPORT
+
+Also skip:
+  • Any account where the Budget column is itself in parentheses
+  • Any account where the variance is negative but the actual is clearly positive
+  • Income accounts (30xxx or 42-30xxx) — these never belong in Section C
+
+Displayed in: bold red
+
+POST-PROCESSING FILTERS (applied automatically by the app after AI output):
+  • Remove any Section C item matching an income account number (30xxx-00)
+  • Remove any Section C item under $50 (likely a positive-actual misread)
+  • Remove any Section C item where the Current Period Budget is $0.00
+  • Remove any Section C item where the variance tag is negative
+    (meaning actual > budget = over-budget, not a truly negative actual)
+  • Remove any Section C item whose account also appears in Section D
+    with a positive actual confirmed
+
+
+------------------------------------------------------------
+SECTION D — NOTABLE EXPENSE VARIANCES
+------------------------------------------------------------
+
+Report expense accounts where ALL THREE of the following are true:
+  1. The Current Period Budget is a positive number greater than zero
+  2. The variance between Actual and Budget exceeds 10%
+  3. The absolute dollar difference between Actual and Budget is $50.00 or more
+
+Skip any account where Budget is zero, blank, or in parentheses.
+Skip any account where the dollar difference is under $50 even if the
+percentage is large.
+Do include accounts where the Actual is $0 against a budget of $50+ —
+that is a reportable zero-spend variance.
+
+COLUMN READING REMINDER: The Actual is always the FIRST number on the row.
+Never confuse the Variance column (position [3]) for the Actual.
+  198.04   50.00   (148.04) ...   → Actual=$198.04, Budget=$50.00
+  786.97   270.00  (516.97) ...   → Actual=$786.97, Budget=$270.00
+
+Variance is always expressed as a positive percentage.
+
+POST-PROCESSING FILTERS (applied automatically by the app after AI output):
+  • Remove any item with a variance of 10% or less
+  • Remove any item where Budget is $0.00
+  • Remove any item where the dollar difference is under $50
+
+
+============================================================
+STATUS DETERMINATION
+============================================================
+
+Each community row gets one of three statuses based on all findings combined:
+
+  CRITICAL  Red border   BS Operating is imbalanced, OR Very Low Cash, OR
+                         BS Reserve is imbalanced, OR Pre-Paid mismatch
+
+  WARNING   Yellow border  BS Operating shows Low Cash (10–20%), OR income
+                           statement has any findings in sections A–D
+
+  OK        Green border   All checks pass, income statement is clean
+
+The stats bar at the top of the results page counts communities by status.
+
+
+============================================================
+OTHER APP BEHAVIORS
+============================================================
+
+Page limit:
+  Up to 99 pages are sent per PDF. If a report is longer it is truncated to
+  the first 99 pages before sending.
+
+Parallel processing:
+  Up to 3 PDFs are analyzed simultaneously. Workers are staggered 2 seconds
+  apart at startup to avoid bursting the API rate limit.
+
+Rate limit handling:
+  If the API returns a rate limit error, the app waits 30 seconds and retries,
+  up to 3 attempts per file.
+
+Session save/resume:
+  Completed results are saved to the browser's localStorage after each file
+  finishes. If you close the browser or navigate away, re-uploading the same
+  PDF files will automatically restore their cached results so you only
+  re-run the missing ones.
+
+Export to Excel:
+  All results export to a formatted .xlsx file with rich text color coding:
+    • Section A items (NSF, Leasing, Collection) — dark red bold
+    • Section B / B2 / Negative income — orange
+    • Section D over-budget variances — red
+    • Section D under-budget variances — black
+  A Performance Log tab is also included showing timing and retry data
+  for every file in the batch.
+
+
+============================================================
+END OF RULES DOCUMENT
+============================================================

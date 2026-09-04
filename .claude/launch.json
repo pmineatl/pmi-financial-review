@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Static File Server",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["/Users/PMINEATL/Documents/pmi-financial-review/serve.py"],
+      "port": 8080
+    }
+  ]
+}

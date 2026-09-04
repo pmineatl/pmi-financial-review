@@ -1,1 +1,27 @@
+# This repository is PUBLIC and is served as a GitHub Pages site. Everything
+# committed here is world-readable. HOA financial packages contain homeowner
+# names, addresses and email addresses, so no client data may be committed.
+
+# Client financial documents and reports
+*.pdf
+*.xlsx
+*.xls
+*.csv
+pdf*/
+pdfs/
+
+# Local regression fixtures (real community data - keep local, see tests/README.md)
+tests/golden/
+
+# Credentials. worker/.dev.vars is also ignored by worker/.gitignore; repeated
+# here so the rule survives if that file is ever moved or removed.
+.dev.vars
+*.dev.vars
+.env
+.env.*
+
+# Tooling and OS noise
+node_modules/
+.wrangler/
+.DS_Store
 Icon?

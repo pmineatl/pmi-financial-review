@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v44</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v45</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -166,6 +166,13 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
     <span class="resume-banner-icon">☁</span>
     <div style="flex:1; min-width:0;">
       <div class="resume-banner-text" id="cincPreviewInfo" style="margin-bottom:8px;"></div>
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap;">
+        <input type="text" id="cincPreviewFilter" placeholder="Filter communities…" autocomplete="off"
+               style="flex:1; min-width:180px; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text); font-family:'IBM Plex Mono',monospace; font-size:11px; padding:5px 9px; outline:none;"/>
+        <button class="resume-banner-btn resume-clear-btn" id="cincSelectAll" style="padding:4px 10px;">Select all</button>
+        <button class="resume-banner-btn resume-clear-btn" id="cincSelectNone" style="padding:4px 10px;">Select none</button>
+        <span class="resume-banner-text" id="cincSelectedCount" style="flex:0 0 auto;"></span>
+      </div>
       <div id="cincPreviewList" style="margin:0 0 10px 0; max-height:260px; overflow-y:auto;"></div>
       <button class="resume-banner-btn resume-view-btn" id="cincImportBtn">Import Selected →</button>
       <button class="resume-banner-btn resume-clear-btn" id="cincCancelBtn">Cancel</button>
@@ -514,6 +521,9 @@ function renderCincPreview(startDate, endDate) {
     row.innerHTML = `<input type="checkbox" checked data-idx="${i}"/> <span>${esc(item.displayName)} <span style="color:var(--text-dim)">— ${sizeKB} KB</span></span>`;
     cincPreviewList.appendChild(row);
   });
+  cincPreviewFilter.value = '';
+  applyCincFilter();
+  updateCincSelectedCount();
   cincPreview.style.display = 'flex';
 }
 
@@ -531,6 +541,42 @@ document.getElementById('cincCancelBtn').addEventListener('click', () => {
   cincFetchedItems = [];
   cincPreview.style.display = 'none';
 });
+
+// Selecting and filtering the preview list. The filter only hides rows; a hidden
+// row keeps its checked state, so filtering can never silently drop a selection.
+const cincPreviewFilter = document.getElementById('cincPreviewFilter');
+const cincSelectedCount = document.getElementById('cincSelectedCount');
+
+function updateCincSelectedCount() {
+  const boxes = cincPreviewList.querySelectorAll('input[type="checkbox"]');
+  const n = cincPreviewList.querySelectorAll('input[type="checkbox"]:checked').length;
+  cincSelectedCount.textContent = `${n} of ${boxes.length} selected`;
+  document.getElementById('cincImportBtn').disabled = n === 0;
+}
+
+function applyCincFilter() {
+  const q = cincPreviewFilter.value.trim().toLowerCase();
+  cincPreviewList.querySelectorAll('label').forEach(row => {
+    row.style.display = !q || row.textContent.toLowerCase().includes(q) ? 'flex' : 'none';
+  });
+}
+
+cincPreviewFilter.addEventListener('input', applyCincFilter);
+// Select all / none act on the rows currently visible, so they compose with the
+// filter: type "Windsor", press Select none, and only those are deselected.
+document.getElementById('cincSelectAll').addEventListener('click', () => {
+  cincPreviewList.querySelectorAll('label').forEach(row => {
+    if (row.style.display !== 'none') row.querySelector('input').checked = true;
+  });
+  updateCincSelectedCount();
+});
+document.getElementById('cincSelectNone').addEventListener('click', () => {
+  cincPreviewList.querySelectorAll('label').forEach(row => {
+    if (row.style.display !== 'none') row.querySelector('input').checked = false;
+  });
+  updateCincSelectedCount();
+});
+cincPreviewList.addEventListener('change', updateCincSelectedCount);
 
 const MAX_PAGES = 99;
 
@@ -1013,6 +1059,9 @@ document.getElementById('runBtn').addEventListener('click', async () => {
   const batchStart = Date.now();
   const totalFiles = files.length;
   let completedCount = files.filter(f => f.status === 'done').length;
+  // Files restored from a saved session were not analysed in this run, so they
+  // must not count toward the throughput used for the estimate.
+  const startedAlreadyDone = completedCount;
 
   function updateProgressUI() {
     const pct = Math.round((completedCount / totalFiles) * 100);
@@ -1020,6 +1069,15 @@ document.getElementById('runBtn').addEventListener('click', async () => {
     const activeNames = files.filter(f => f.status === 'processing').map(f => f.file.name.replace(/\.pdf$/i,''));
     const retryingNames = files.filter(f => f.status === 'rate-limit').map(f => f.file.name.replace(/\.pdf$/i,''));
     let label = `[${completedCount}/${totalFiles}] `;
+    // Estimate from observed throughput rather than a fixed per-file guess, so a
+    // batch that hits retries reports a slower finish instead of a stale one.
+    const doneSoFar = completedCount - startedAlreadyDone;
+    const elapsedMs = Date.now() - batchStart;
+    if (doneSoFar >= 2 && completedCount < totalFiles) {
+      const remaining = Math.round(((elapsedMs / doneSoFar) * (totalFiles - completedCount)) / 1000);
+      const mins = Math.floor(remaining / 60), secs = remaining % 60;
+      label += mins >= 1 ? `about ${mins}m ${secs}s left · ` : `about ${secs}s left · `;
+    }
     if (activeNames.length) label += `Analyzing: ${activeNames.join(', ')}`;
     if (retryingNames.length) label += ` · Retrying: ${retryingNames.join(', ')}`;
     document.getElementById('progressLabel').textContent = label;
