@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v42</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v43</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -354,7 +354,7 @@ function renderFileList() {
     const div = document.createElement('div');
     
     div.className = `file-item ${item.status}`;
-    const statusText = {pending:'Pending', processing:'Analyzing...', done:'✓ Complete', error:'✗ Failed', 'rate-limit':'⏳ Rate limit — retrying...'}[item.status] || '';
+    const statusText = {pending:'Pending', processing:'Analyzing...', done:'✓ Complete', error:'✗ Failed', 'rate-limit':'⏳ Retrying...'}[item.status] || '';
     const sizeKB = Math.round(item.file.size / 1024);
     const warnColor = sizeKB > 700 ? 'var(--accent-gold)' : 'var(--text-dim)';
     const warnMsg = sizeKB > 700 ? `⚠ ${sizeKB} KB — large file, consider compressing in Acrobat` : `${sizeKB} KB`;
@@ -715,6 +715,69 @@ function postProcessIncomeStatement(items) {
   return deduped.length === 0 ? ['OK'] : deduped;
 }
 
+// Hard ceiling on a single API call. Observed runs are 6-45s; a request that has
+// produced nothing after this long is hung, and without a timeout it would park
+// one of the CONCURRENCY workers for the rest of the batch.
+const API_TIMEOUT_MS = 180000;
+
+// One Claude call. Classifies failures into a `kind` the retry loop can act on,
+// instead of leaving the caller to string-match an error message.
+async function callClaude(base64, prompt) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': getApiKey(),
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 8192,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
+            { type: 'text', text: prompt }
+          ]
+        }]
+      })
+    });
+  } catch (fetchErr) {
+    const err = new Error(fetchErr.name === 'AbortError'
+      ? `Request timed out after ${Math.round(API_TIMEOUT_MS / 1000)}s with no response.`
+      : `Network error: ${fetchErr.message}`);
+    err.kind = fetchErr.name === 'AbortError' ? 'timeout' : 'network';
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!response.ok) {
+    let apiMsg = '';
+    try { const body = await response.json(); apiMsg = body.error?.message || ''; } catch (_) {}
+    const err = new Error(apiMsg || `API error (HTTP ${response.status})`);
+    err.status = response.status;
+    // Anthropic sends retry-after on 429; honour it rather than guessing.
+    const retryAfter = parseInt(response.headers.get('retry-after') || '', 10);
+    if (!isNaN(retryAfter)) err.retryAfterMs = retryAfter * 1000;
+    err.kind =
+      response.status === 429 ? 'rate-limit' :
+      response.status === 529 || response.status >= 500 ? 'overloaded' :
+      response.status === 413 || /too long/i.test(apiMsg) ? 'too-large' :
+      'api-error';   // 400/401/403 etc — deterministic, not worth retrying
+    throw err;
+  }
+
+  const data = await response.json();
+  return data.content.map(i => i.text || '').join('');
+}
+
 async function analyzePDF(file, monthDisplay) {
   const { base64, pageCount, truncated } = await toBase64(file);
   const truncationNote = truncated ? `\n\nNOTE: This document was ${pageCount} pages. Only the first ${MAX_PAGES} pages have been provided for analysis.` : '';
@@ -858,30 +921,7 @@ Respond ONLY with valid JSON, no markdown fences:
   "incomeStatement": ["OK"] or ["**NSF Charges: 30850-00 ($25.00)**", "Income variance: ...", "Negative income: ...", "Negative expense: ...", "Expense variance: ..."]
 }`;
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': getApiKey(),
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 8192,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
-          { type: 'text', text: prompt }
-        ]
-      }]
-    })
-  });
-
-  if (!response.ok) { const err = await response.json(); throw new Error(err.error?.message || 'API error'); }
-  const data = await response.json();
-  const raw = data.content.map(i => i.text || '').join('');
+  const raw = await callClaude(base64, prompt);
 
   // Extract JSON object — handles extra text Claude sometimes adds before/after the object
   function extractJSON(text) {
@@ -915,38 +955,22 @@ Respond ONLY with valid JSON, no markdown fences:
   let parsed = extractJSON(raw);
   let lastRaw = raw;
 
-  // If parse failed, retry the API call once before giving up
+  // If parse failed, re-ask once before giving up. A status error on this second
+  // call (rate limit, overload, timeout) now propagates with its own kind rather
+  // than being swallowed and mislabelled as a formatting problem.
   if (!parsed) {
-    const retry = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': getApiKey(),
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 8192,
-        messages: [{ role: 'user', content: [
-          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
-          { type: 'text', text: prompt }
-        ]}]
-      })
-    });
-    if (retry.ok) {
-      const retryData = await retry.json();
-      const retryRaw = retryData.content.map(i => i.text || '').join('');
-      parsed = extractJSON(retryRaw);
-      lastRaw = retryRaw;
-    }
+    const retryRaw = await callClaude(base64, prompt);
+    parsed = extractJSON(retryRaw);
+    lastRaw = retryRaw;
   }
 
   if (!parsed) {
     // Include a snippet of what Claude actually returned so a repeated failure is diagnosable
     // without needing to reproduce it — this shows up in the Excel error cell / Performance Log.
     const snippet = lastRaw.slice(0, 250).replace(/\s+/g, ' ').trim();
-    throw new Error(`Claude returned an unexpected (non-JSON) response for this file — re-run to retry. Response started with: "${snippet}${lastRaw.length > 250 ? '…' : ''}"`);
+    const err = new Error(`Claude returned an unexpected (non-JSON) response for this file — re-run to retry. Response started with: "${snippet}${lastRaw.length > 250 ? '…' : ''}"`);
+    err.kind = 'bad-format';
+    throw err;
   }
   if (Array.isArray(parsed.incomeStatement)) {
     parsed.incomeStatement = postProcessIncomeStatement(parsed.incomeStatement);
@@ -1002,10 +1026,10 @@ document.getElementById('runBtn').addEventListener('click', async () => {
     const pct = Math.round((completedCount / totalFiles) * 100);
     document.getElementById('progressFill').style.width = pct + '%';
     const activeNames = files.filter(f => f.status === 'processing').map(f => f.file.name.replace(/\.pdf$/i,''));
-    const rateLimitNames = files.filter(f => f.status === 'rate-limit').map(f => f.file.name.replace(/\.pdf$/i,''));
+    const retryingNames = files.filter(f => f.status === 'rate-limit').map(f => f.file.name.replace(/\.pdf$/i,''));
     let label = `[${completedCount}/${totalFiles}] `;
     if (activeNames.length) label += `Analyzing: ${activeNames.join(', ')}`;
-    if (rateLimitNames.length) label += ` · Rate-limit retry: ${rateLimitNames.join(', ')}`;
+    if (retryingNames.length) label += ` · Retrying: ${retryingNames.join(', ')}`;
     document.getElementById('progressLabel').textContent = label;
   }
 
@@ -1013,7 +1037,7 @@ document.getElementById('runBtn').addEventListener('click', async () => {
     const fileLog = {
       fileName: item.file.name, fileSizeKB: Math.round(item.file.size / 1024),
       startTime: new Date().toLocaleTimeString(), startMs: Date.now(),
-      endMs: null, durationSecs: null, attempts: 0, rateLimitHits: 0,
+      endMs: null, durationSecs: null, attempts: 0, retries: 0, retryReasons: [],
       outcome: 'pending', pageCount: null, truncated: false
     };
     item.status = 'processing';
@@ -1036,33 +1060,43 @@ document.getElementById('runBtn').addEventListener('click', async () => {
         saveSession(month, monthDisplay, reviewer, files);
         break;
       } catch (err) {
+        // callClaude tags failures with a `kind`; fall back to message text for
+        // errors raised elsewhere (toBase64, pdf-lib) that carry no tag.
         const msg = (err.message || '').toLowerCase();
-        const isRateLimit = msg.includes('rate limit') || msg.includes('rate_limit');
-        const isTokenLimit = msg.includes('too long');
-        // Non-JSON responses from Claude are usually a stochastic formatting slip (verbose
-        // preamble, dropped closing brace, etc.) rather than a deterministic failure — retrying
-        // with a fresh independent request resolves most of them.
-        const isUnexpectedResponse = msg.includes('unexpected') && msg.includes('response');
-        if (isTokenLimit) {
+        const kind = err.kind || (
+          msg.includes('rate limit') || msg.includes('rate_limit') ? 'rate-limit' :
+          msg.includes('too long') ? 'too-large' :
+          msg.includes('unexpected') && msg.includes('response') ? 'bad-format' :
+          'api-error'
+        );
+
+        if (kind === 'too-large') {
           item.status = 'error';
           item.result = { communityName: item.file.name.replace('.pdf',''), bsOperating: 'Error: Document too large for API. Compress in Acrobat and retry.', bsReserve: 'Error', prepaid: 'Error', incomeStatement: ['Error'] };
-          fileLog.outcome = 'failed-token-limit';
+          fileLog.outcome = 'failed-too-large';
           renderFileList(); updateProgressUI();
           break;
         }
-        if ((isRateLimit || isUnexpectedResponse) && attempt < maxRetries) {
+
+        // Base backoff per failure type, multiplied by attempt number.
+        // Rate limits must wait out Anthropic's window; overload and transport
+        // failures just need a moment; a bad-format response needs only a fresh
+        // sample. A 4xx other than 429 is deterministic — never retried.
+        const BACKOFF_MS = { 'rate-limit': 30000, 'overloaded': 10000, 'timeout': 5000, 'network': 5000, 'bad-format': 5000 };
+        const backoff = BACKOFF_MS[kind];
+
+        if (backoff && attempt < maxRetries) {
           attempt++;
-          fileLog.rateLimitHits++;
-          item.status = 'rate-limit';
+          fileLog.retries++;
+          fileLog.retryReasons.push(kind);
+          item.status = 'rate-limit';   // shared amber "retrying" styling
           renderFileList(); updateProgressUI();
-          // Rate limits need to wait out Anthropic's window (30s/60s/90s); a bad-format
-          // response just needs a fresh attempt, so back off much more lightly (5s/10s/15s).
-          await new Promise(r => setTimeout(r, (isRateLimit ? 30000 : 5000) * attempt));
+          await new Promise(r => setTimeout(r, err.retryAfterMs || backoff * attempt));
           item.status = 'processing';
           renderFileList(); updateProgressUI();
         } else {
           item.status = 'error';
-          fileLog.outcome = isRateLimit ? 'failed-rate-limit' : (isUnexpectedResponse ? 'failed-unexpected-response' : 'failed-error');
+          fileLog.outcome = 'failed-' + kind;
           item.result = { communityName: item.file.name.replace('.pdf',''), bsOperating: 'Error: '+err.message, bsReserve: 'Error', prepaid: 'Error', incomeStatement: ['Error'] };
           renderFileList(); updateProgressUI();
           break;
@@ -1091,7 +1125,7 @@ document.getElementById('runBtn').addEventListener('click', async () => {
   const batchDurationSecs = Math.round((Date.now() - batchStart) / 1000);
   perfLog.batchSummary = {
     totalFiles: files.length, totalDurationSecs: batchDurationSecs,
-    totalRateLimitHits: perfLog.reduce((s, r) => s + r.rateLimitHits, 0),
+    totalRetries: perfLog.reduce((s, r) => s + r.retries, 0),
     runDate: new Date().toLocaleDateString('en-US'), runTime: new Date().toLocaleTimeString()
   };
 
@@ -1317,16 +1351,16 @@ async function buildExcelWorkbook(reportType) {
       ws2.mergeCells(p1.number, 1, p1.number, 10); p1.height = 22;
       Object.assign(p1.getCell(1), { font: { name: 'Arial', size: 13, bold: true, color: { argb: WHITE } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: NAVY } }, alignment: { horizontal: 'left', vertical: 'middle' } });
       [[`Run Date: ${summary.runDate || ''}   |   Run Time: ${summary.runTime || ''}   |   Max retries: 3`],
-       [`Total Files: ${summary.totalFiles || perfLog.length}   |   Total Duration: ${summary.totalDurationSecs || ''}s   |   Total Rate Limit Hits: ${summary.totalRateLimitHits || 0}`]
+       [`Total Files: ${summary.totalFiles || perfLog.length}   |   Total Duration: ${summary.totalDurationSecs || ''}s   |   Total Retries: ${summary.totalRetries || 0}`]
       ].forEach(rowData => {
         const pr = ws2.addRow([...rowData, ...Array(9).fill('')]); ws2.mergeCells(pr.number, 1, pr.number, 10); pr.height = 16;
         Object.assign(pr.getCell(1), { font: { name: 'Arial', size: 10, color: { argb: 'FF444444' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: LTBG } }, alignment: { horizontal: 'left', vertical: 'middle' } });
       });
       ws2.addRow([]);
-      const ph = ws2.addRow(['File Name','File Size (KB)','Page Count','Truncated to 99','Start Time','Duration (secs)','Attempts','Rate Limit Hits','Between-File Pause (secs)','Outcome']);
+      const ph = ws2.addRow(['File Name','File Size (KB)','Page Count','Truncated to 99','Start Time','Duration (secs)','Attempts','Retries','Retry Reasons','Between-File Pause (secs)','Outcome']);
       ph.height = 18; ph.eachCell(cell => hdrCell(cell));
       perfLog.forEach(r => {
-        const pr = ws2.addRow([r.fileName, r.fileSizeKB, r.pageCount || 'unknown', r.truncated ? 'YES' : 'no', r.startTime, r.durationSecs, r.attempts, r.rateLimitHits, r.betweenFilePauseSecs, r.outcome]);
+        const pr = ws2.addRow([r.fileName, r.fileSizeKB, r.pageCount || 'unknown', r.truncated ? 'YES' : 'no', r.startTime, r.durationSecs, r.attempts, r.retries, (r.retryReasons || []).join(', '), r.betweenFilePauseSecs, r.outcome]);
         pr.eachCell((cell, col) => { cell.font = { name: 'Arial', size: 10 }; if (col > 1) cell.alignment = { horizontal: 'center' }; });
         const oc = pr.getCell(10);
         oc.font = { name: 'Arial', size: 10, color: { argb: r.outcome === 'success' ? OK_FONT : CRIT_FONT } };
