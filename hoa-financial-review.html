@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v41</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v42</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -157,6 +157,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
         <div class="field"><label>End Date</label><input type="date" id="cincEndDate"/></div>
         <button class="run-btn" id="cincFetchListBtn">Find Documents →</button>
       </div>
+      <div class="progress-label" style="margin-bottom:8px;">Set both dates to the day the financials batch was published in CINC — one day returns exactly one document per community. Widening the range pulls in other batches and returns each community more than once.</div>
       <div class="progress-label" id="cincPullStatus"></div>
     </div>
   </div>
@@ -358,7 +359,7 @@ function renderFileList() {
     const warnColor = sizeKB > 700 ? 'var(--accent-gold)' : 'var(--text-dim)';
     const warnMsg = sizeKB > 700 ? `⚠ ${sizeKB} KB — large file, consider compressing in Acrobat` : `${sizeKB} KB`;
     const warning = `<span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:${warnColor};margin-left:6px;">${warnMsg}</span>`;
-    div.innerHTML = `<div class="file-dot"></div><span class="file-name">${item.file.name}</span>${warning}<span class="file-status">${statusText}</span>${item.status==='pending'?`<button class="file-remove" onclick="removeFile(${i})">✕</button>`:''}`;
+    div.innerHTML = `<div class="file-dot"></div><span class="file-name">${esc(item.file.name)}</span>${warning}<span class="file-status">${statusText}</span>${item.status==='pending'?`<button class="file-remove" onclick="removeFile(${i})">✕</button>`:''}`;
     fileListEl.appendChild(div);
   });
 }
@@ -373,14 +374,19 @@ dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.
 // ===== CINC INTEGRATION =====
 const CINC_CONCURRENCY = 3; // simultaneous document fetches from the Worker
 
-// Default date range: last 7 days (confirmed safe against CINC's max-span limit)
+// Local (not UTC) YYYY-MM-DD — toISOString() would roll over to tomorrow's date
+// for evening runs in US time zones, silently querying the wrong publish day.
+function localDateStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+// Default to a SINGLE day, not a range. CINC publishes each monthly financials
+// batch on one date, one document per community. A multi-day window spans more
+// than one batch and returns the same community several times — the source of
+// the apparent "duplicates". Keep start and end on the publish date.
 {
-  const cincEndInput = document.getElementById('cincEndDate');
-  const cincStartInput = document.getElementById('cincStartDate');
-  cincEndInput.value = now.toISOString().slice(0, 10);
-  const cincStart = new Date(now);
-  cincStart.setDate(cincStart.getDate() - 7);
-  cincStartInput.value = cincStart.toISOString().slice(0, 10);
+  document.getElementById('cincStartDate').value = localDateStr(now);
+  document.getElementById('cincEndDate').value = localDateStr(now);
 }
 
 let cincFetchedItems = []; // flattened {associationName, base64, fileId} accumulated during a pull
@@ -505,7 +511,7 @@ function renderCincPreview(startDate, endDate) {
     const sizeKB = Math.round(item.base64.length * 0.75 / 1024);
     const row = document.createElement('label');
     row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:4px 0; font-family:\'IBM Plex Mono\',monospace; font-size:11px; color:#6b4f00;';
-    row.innerHTML = `<input type="checkbox" checked data-idx="${i}"/> <span>${item.displayName} <span style="color:var(--text-dim)">— ${sizeKB} KB</span></span>`;
+    row.innerHTML = `<input type="checkbox" checked data-idx="${i}"/> <span>${esc(item.displayName)} <span style="color:var(--text-dim)">— ${sizeKB} KB</span></span>`;
     cincPreviewList.appendChild(row);
   });
   cincPreview.style.display = 'flex';
