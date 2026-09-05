@@ -199,5 +199,82 @@ section('Whole-record assembly');
     ['Test HOA', 'OK', 'Not provided', 'Not provided', 'Not provided', ['OK']]);
 }
 
+// ------------------------------------------------------------------ findings
+// The exception rules will match on the finding record, not on the sentence, so
+// the record has to carry a stable identity and the sentence has to stay exactly
+// reproducible from it. Both halves are asserted here; golden-check.js asserts
+// the same identity across a full real month.
+section('Finding records');
+{
+  const r = buildFindings({
+    communityName: 'Test HOA',
+    balanceSheet: { operating: { totalAssets: 100, totalLiabilitiesAndEquity: 100 }, reserve: null, cashOperating: 15 },
+    annualIncomeBudget: 100,
+    prepaid: { balanceSheetAmount: 500, homeownerListTotal: 400 },
+    agingReportPresent: true,
+    agingNegatives: [{ accountCode: 'A100', ownerName: 'Sample Owner', lineItem: 'Assessments', balance: -25 }],
+    specialIncome: [{ accountNumber: '30850-000', currentPeriodActual: -480, ytdActual: -480 }],
+    incomeAccounts: [{ accountNumber: '40100', accountName: 'Assessment Income', currentPeriodActual: 900, currentPeriodBudget: 1200 }],
+    expenseAccounts: [{ accountNumber: '60400-100', accountName: 'Landscaping', currentPeriodActual: 4200, currentPeriodBudget: 3500 }]
+  });
+
+  t('every finding carries check, column, severity and text',
+    r.findings.every(f => f.check && f.column && f.severity && typeof f.text === 'string'), true);
+
+  const byCheck = c => r.findings.filter(f => f.check === c);
+  t('one finding per reported item, in report order',
+    r.findings.map(f => f.check),
+    ['lowCash', 'bsReserve', 'prepaid', 'ledgerAdjustment', 'sectionA', 'incomeVariance', 'expenseVariance']);
+
+  // Identity: rebuild each cell from its own findings and compare.
+  const inCol = c => r.findings.filter(f => f.column === c);
+  t('bsOperating rebuilds from its findings', renderFindingCell(inCol('bsOperating')), r.bsOperating);
+  t('bsReserve rebuilds from its findings', renderFindingCell(inCol('bsReserve')), r.bsReserve);
+  t('prepaid rebuilds from its findings', renderFindingCell(inCol('prepaid')), r.prepaid);
+  t('ledger rebuilds from its findings', renderLedgerField(inCol('ledgerAdjustments')), r.ledgerAdjustments);
+  t('income statement rebuilds from its findings', inCol('incomeStatement').map(f => f.text), r.incomeStatement);
+
+  // A rule is written against the account number as the chart of accounts lists
+  // it, so a "-100" cost-centre suffix must not stop the rule from matching.
+  t('account suffix is normalised away for matching', byCheck('expenseVariance')[0].account, '60400');
+  t('the full account number is kept alongside it', byCheck('expenseVariance')[0].accountNumber, '60400-100');
+  t('section A account is normalised too', byCheck('sectionA')[0].account, '30850');
+  t('account name is carried for the exceptions sheet', byCheck('expenseVariance')[0].accountName, 'Landscaping');
+
+  t('variance figures are kept so a threshold rule can re-judge the item',
+    [byCheck('expenseVariance')[0].figures.actual, byCheck('expenseVariance')[0].figures.budget,
+     Number(byCheck('expenseVariance')[0].figures.pct.toFixed(1))], [4200, 3500, 20]);
+
+  // The homeowner account code is not a GL account; keeping it out of `account`
+  // stops a rule for GL 40700 from ever matching a homeowner ledger row.
+  t('homeowner code is not stored as a GL account', byCheck('ledgerAdjustment')[0].account, null);
+  t('homeowner code is kept in ref', byCheck('ledgerAdjustment')[0].ref.accountCode, 'A100');
+}
+
+section('Finding severity and absent data');
+{
+  const r = buildFindings({
+    balanceSheet: { operating: { totalAssets: 10, totalLiabilitiesAndEquity: 10 }, reserve: null, cashOperating: null },
+    prepaid: null, annualIncomeBudget: null
+  });
+  const one = c => r.findings.find(f => f.check === c);
+  // "Not provided" is a finding, not a silence - it is what the 11 communities
+  // with no reserve account will have an exception written against.
+  t('a missing reserve column is a finding, not nothing', !!one('bsReserve'), true);
+  t('and it is marked as absent data', one('bsReserve').notProvided, true);
+  t('a missing prepaid reconciliation is a finding', one('prepaid').notProvided, true);
+  t('an unexamined aging report never counts against the community',
+    one('ledgerAdjustment').severity, 'info');
+  t('a balanced column produces no finding at all',
+    r.findings.filter(f => f.column === 'bsOperating').length, 0);
+}
+{
+  const cash = (c, b) => buildFindings({ balanceSheet: { operating: { totalAssets: 1, totalLiabilitiesAndEquity: 1 }, cashOperating: c }, annualIncomeBudget: b })
+    .findings.find(f => f.check === 'lowCash');
+  t('low cash argues for a warning', cash(15, 100).severity, 'warning');
+  t('very low cash argues for a critical', cash(5, 100).severity, 'critical');
+  t('healthy cash produces no finding', cash(50, 100), undefined);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -34,6 +34,46 @@ for (const [community, extracted] of Object.entries(extractions)) {
   current[community] = buildFindings(extracted);
 }
 
+// Structural invariant: every report cell must be exactly reproducible from the
+// finding records it was rendered from, and no finding may belong to a column
+// the report does not have. If this drifts, an exception rule would silence
+// something other than the item it names - so it is checked on all 110 real
+// communities, not just the synthetic cases in findings.test.js.
+const COLUMNS = ['bsOperating', 'bsReserve', 'prepaid', 'ledgerAdjustments', 'incomeStatement'];
+let identityFailures = 0;
+for (const [community, rec] of Object.entries(current)) {
+  if (!Array.isArray(rec.findings)) {
+    console.log(`IDENTITY  ${community}: no findings array`); identityFailures++; continue;
+  }
+  const inColumn = col => rec.findings.filter(f => f.column === col);
+  const isItems = inColumn('incomeStatement').map(f => f.text);
+  const rebuilt = {
+    bsOperating: renderFindingCell(inColumn('bsOperating')),
+    bsReserve: renderFindingCell(inColumn('bsReserve')),
+    prepaid: renderFindingCell(inColumn('prepaid')),
+    ledgerAdjustments: renderLedgerField(inColumn('ledgerAdjustments')),
+    incomeStatement: isItems.length ? isItems : ['OK']
+  };
+  for (const field of COLUMNS) {
+    if (JSON.stringify(rebuilt[field]) !== JSON.stringify(rec[field])) {
+      console.log(`IDENTITY  ${community}.${field}`);
+      console.log(`      cell:     ${JSON.stringify(rec[field])}`);
+      console.log(`      findings: ${JSON.stringify(rebuilt[field])}`);
+      identityFailures++;
+    }
+  }
+  for (const f of rec.findings) {
+    if (!COLUMNS.includes(f.column)) { console.log(`IDENTITY  ${community}: finding in unknown column ${f.column}`); identityFailures++; }
+    if (!f.check || !f.severity || typeof f.text !== 'string') { console.log(`IDENTITY  ${community}: incomplete finding ${JSON.stringify(f)}`); identityFailures++; }
+  }
+}
+if (identityFailures) {
+  console.error(`\n${identityFailures} identity failure(s): the findings and the wording have drifted apart.`);
+  process.exit(1);
+}
+const findingCount = Object.values(current).reduce((n, r) => n + r.findings.length, 0);
+console.log(`Identity: ${Object.keys(current).length} communities, ${findingCount} findings, every cell reproducible from its findings.`);
+
 if (process.argv.includes('--update')) {
   fs.writeFileSync(SNAPSHOT, JSON.stringify(current, null, 1));
   console.log(`Snapshot updated: ${Object.keys(current).length} communities.`);

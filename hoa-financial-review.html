@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v48</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v49</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -905,6 +905,11 @@ async function toBase64(file) {
 // rules and emit finished sentences, then re-parsed those sentences with regex —
 // which is where the missed balance-sheet imbalances (v41) and the false Low Cash
 // flags (v34) came from. Extraction is a transcription task; judgement is code.
+//
+// Each check produces finding *records* — { check, column, severity, account,
+// figures, text } — and the report cells are rendered from them. The record is
+// the identity an exception rule matches on; matching on the rendered sentence
+// would put us straight back to regex-parsing prose.
 
 const VARIANCE_PCT_THRESHOLD = 10;   // report variances above this percentage
 const VARIANCE_MIN_DOLLARS   = 50;   // ...but only when the dollar gap is at least this
@@ -931,56 +936,156 @@ const parenAmount = n => '($' + Math.abs(Number(n)).toLocaleString('en-US', { mi
 const signedAmount = n => '($' + (Number(n) < 0 ? '-' : '')
   + Math.abs(Number(n)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ')';
 
-// Compare one balance-sheet column. Returns "OK", "Not provided", or the
-// difference. A column the statement does not have is not an imbalance.
-function checkBalanceColumn(col) {
-  if (!col || !isNum(col.totalAssets) || !isNum(col.totalLiabilitiesAndEquity)) return 'Not provided';
-  const diff = col.totalAssets - col.totalLiabilitiesAndEquity;
-  if (Math.abs(diff) < BALANCE_TOLERANCE) return 'OK';
-  return `Out of balance — Total Assets: ${money(col.totalAssets)}; `
-       + `Total Liabilities & Equity: ${money(col.totalLiabilitiesAndEquity)}; `
-       + `Difference: ${money(diff)}`;
+// Statements number the same account as "40700" or "40700-000". The prefix is
+// what identifies the account, and it is what a rule will be written against.
+const acctPrefix = n => String(n == null ? '' : n).split('-')[0].trim();
+
+// One finding. `text` is the wording that reaches the report; everything else is
+// the identity. `notProvided` marks the absence of data rather than a problem
+// found in it — it still fills the cell, and it is still something an exception
+// may legitimately accept (a community with no reserve account has nothing to
+// reconcile). `severity` records the tier the finding argues for; it does not
+// itself decide the community's status, which is still computed at render time.
+function finding(f) {
+  const rec = {
+    check: f.check,
+    column: f.column,
+    severity: f.severity,
+    account: f.account == null ? null : String(f.account),
+    accountNumber: f.accountNumber == null ? null : String(f.accountNumber),
+    accountName: f.accountName == null ? null : String(f.accountName),
+    figures: f.figures || {},
+    text: f.text
+  };
+  if (f.notProvided) rec.notProvided = true;
+  if (f.ref) rec.ref = f.ref;
+  return rec;
 }
 
-function checkPrepaid(p) {
-  if (!p) return 'Not provided';
+// A report cell is its findings joined; no findings means nothing to report.
+// The join is why "Not provided | Low Cash (…)" and "Out of balance … | Low
+// Cash (…)" have always read the way they do.
+function renderFindingCell(fs) { return fs.length ? fs.map(f => f.text).join(' | ') : 'OK'; }
+
+// Compare one balance-sheet column. A column the statement does not have is not
+// an imbalance — but it is not a clean bill of health either, so it is recorded
+// rather than passed over.
+function balanceColumnFindings(col, column) {
+  if (!col || !isNum(col.totalAssets) || !isNum(col.totalLiabilitiesAndEquity)) {
+    return [finding({ check: column, column, severity: 'critical', notProvided: true, text: 'Not provided' })];
+  }
+  const diff = col.totalAssets - col.totalLiabilitiesAndEquity;
+  if (Math.abs(diff) < BALANCE_TOLERANCE) return [];
+  return [finding({
+    check: column, column, severity: 'critical',
+    figures: { totalAssets: col.totalAssets, totalLiabilitiesAndEquity: col.totalLiabilitiesAndEquity, difference: diff },
+    text: `Out of balance — Total Assets: ${money(col.totalAssets)}; `
+        + `Total Liabilities & Equity: ${money(col.totalLiabilitiesAndEquity)}; `
+        + `Difference: ${money(diff)}`
+  })];
+}
+
+// Cash against the annual income budget. Rides along in the Operating cell, as
+// it has since v34.
+function lowCashFindings(x) {
+  const bs = (x && x.balanceSheet) || {};
+  const cash = bs.cashOperating, budget = x && x.annualIncomeBudget;
+  if (!isNum(cash) || !isNum(budget) || budget <= 0) return [];
+  const ratio = cash / budget;
+  if (ratio >= LOW_CASH_RATIO) return [];
+  const very = ratio < VERY_LOW_CASH_RATIO;
+  return [finding({
+    check: 'lowCash', column: 'bsOperating',
+    severity: very ? 'critical' : 'warning',
+    figures: { cash, annualBudget: budget, ratio },
+    text: `${very ? 'Very Low Cash' : 'Low Cash'} (${money(cash)} balance, ${money(budget)} annual budget)`
+  })];
+}
+
+function prepaidFindings(p) {
+  const absent = () => [finding({ check: 'prepaid', column: 'prepaid', severity: 'critical', notProvided: true, text: 'Not provided' })];
+  if (!p) return absent();
   // Neither side reported at all - the package has no prepaid data to reconcile.
-  if (!isNum(p.balanceSheetAmount) && !isNum(p.homeownerListTotal)) return 'Not provided';
+  if (!isNum(p.balanceSheetAmount) && !isNum(p.homeownerListTotal)) return absent();
   // One side absent means zero on that side, which is itself the discrepancy:
   // prepaid sitting on the homeowner list with no matching balance-sheet
   // liability is exactly what this reconciliation exists to catch.
   const bsAmt = isNum(p.balanceSheetAmount) ? p.balanceSheetAmount : 0;
   const listAmt = isNum(p.homeownerListTotal) ? p.homeownerListTotal : 0;
   const diff = bsAmt - listAmt;
-  if (Math.abs(diff) < BALANCE_TOLERANCE) return 'OK';
-  return `Mismatch — Balance Sheet: ${money(bsAmt)}; `
-       + `PrePaid Homeowner List Total: ${money(listAmt)}; `
-       + `Difference: ${money(diff)}`;
+  if (Math.abs(diff) < BALANCE_TOLERANCE) return [];
+  return [finding({
+    check: 'prepaid', column: 'prepaid', severity: 'critical',
+    figures: { balanceSheetAmount: bsAmt, homeownerListTotal: listAmt, difference: diff },
+    text: `Mismatch — Balance Sheet: ${money(bsAmt)}; `
+        + `PrePaid Homeowner List Total: ${money(listAmt)}; `
+        + `Difference: ${money(diff)}`
+  })];
+}
+
+// Homeowner ledger adjustments: a negative balance on any assessment type other
+// than PrePaid. These come from incorrect ledger adjustments and are easy to miss
+// because an account can carry an equal positive and negative balance in two
+// different line items, netting to zero at the account level while both rows are
+// wrong. Each row is judged on its own balance, never on the account total.
+// Warning tier - it is a bookkeeping correction, not a broken statement.
+function ledgerFindings(x) {
+  // Only an explicit true means the aging report was examined. Anything else -
+  // absent, false, or an older extraction that predates this check - is
+  // "Not provided", never a clean bill of health we did not actually verify.
+  if (!x || x.agingReportPresent !== true) {
+    return [finding({ check: 'ledgerAdjustment', column: 'ledgerAdjustments', severity: 'info', notProvided: true, text: 'Not provided' })];
+  }
+  return (x.agingNegatives || []).filter(r =>
+    r && isNum(r.balance) && r.balance < 0 &&
+    // Re-apply the PrePaid exclusion here so a stray one cannot slip through.
+    !/^\s*pre-?paid/i.test(String(r.lineItem || ''))
+  ).map(r => finding({
+    check: 'ledgerAdjustment', column: 'ledgerAdjustments', severity: 'warning',
+    // The homeowner account code is not a GL account, so it is kept in `ref`:
+    // `account` stays reserved for the GL number a rule is written against.
+    accountName: r.lineItem == null ? null : String(r.lineItem),
+    figures: { balance: r.balance },
+    ref: { accountCode: r.accountCode || null, ownerName: r.ownerName || null },
+    text: `${r.accountCode || '?'} ${r.ownerName || ''} — ${r.lineItem}: ${parenAmount(r.balance)}`.replace(/\s+—/, ' —')
+  }));
 }
 
 // Percentage gap between actual and budget, always expressed positive.
 const variancePct = (actual, budget) => Math.abs((actual - budget) / budget) * 100;
 
-function buildIncomeStatementFindings(x) {
-  const items = [];
+function incomeStatementFindings(x) {
+  const out = [];
   const sectionAAccounts = new Set();
 
   // SECTION A — the four special income accounts, read from the income statement only.
   for (const s of (x.specialIncome || [])) {
-    const prefix = String(s.accountNumber || '').split('-')[0];
+    const prefix = acctPrefix(s.accountNumber);
     const label = SECTION_A_ACCOUNTS[prefix];
     if (!label || !isNum(s.currentPeriodActual)) continue;
     sectionAAccounts.add(String(s.accountNumber));
+    const common = {
+      check: 'sectionA', column: 'incomeStatement', severity: 'warning',
+      account: prefix, accountNumber: s.accountNumber, accountName: label
+    };
     // A dash in the Current Period Actual column is no activity this period. The
     // amount may still be sitting in YTD from an earlier month, which is worth
     // surfacing - but labelled as prior-period, not reported as this month's.
     if (s.currentPeriodActual === 0) {
       if (isNum(s.ytdActual) && s.ytdActual !== 0) {
-        items.push(`**${label}: ${s.accountNumber} (YTD ${signedAmount(s.ytdActual).slice(1, -1)}, no current-period activity)**`);
+        out.push(finding(Object.assign({}, common, {
+          figures: { currentPeriodActual: 0, ytdActual: s.ytdActual },
+          text: `**${label}: ${s.accountNumber} (YTD ${signedAmount(s.ytdActual).slice(1, -1)}, no current-period activity)**`
+        })));
       }
       continue;
     }
-    items.push(`**${label}: ${s.accountNumber} ${signedAmount(s.currentPeriodActual)}**`);
+    out.push(finding(Object.assign({}, common, {
+      figures: isNum(s.ytdActual)
+        ? { currentPeriodActual: s.currentPeriodActual, ytdActual: s.ytdActual }
+        : { currentPeriodActual: s.currentPeriodActual },
+      text: `**${label}: ${s.accountNumber} ${signedAmount(s.currentPeriodActual)}**`
+    })));
   }
 
   // SECTION B — income variances over threshold, budget must be positive.
@@ -991,9 +1096,14 @@ function buildIncomeStatementFindings(x) {
     const pct = variancePct(a.currentPeriodActual, a.currentPeriodBudget);
     if (pct <= VARIANCE_PCT_THRESHOLD) continue;
     if (Math.abs(a.currentPeriodActual - a.currentPeriodBudget) < VARIANCE_MIN_DOLLARS) continue;
-    items.push(`Income variance: ${a.accountName} (${a.accountNumber}) — `
-      + `Actual: ${money(a.currentPeriodActual)}, Budget: ${money(a.currentPeriodBudget)}, `
-      + `Variance: ${pct.toFixed(1)}%`);
+    out.push(finding({
+      check: 'incomeVariance', column: 'incomeStatement', severity: 'warning',
+      account: acctPrefix(a.accountNumber), accountNumber: a.accountNumber, accountName: a.accountName,
+      figures: { actual: a.currentPeriodActual, budget: a.currentPeriodBudget, pct, difference: a.currentPeriodActual - a.currentPeriodBudget },
+      text: `Income variance: ${a.accountName} (${a.accountNumber}) — `
+          + `Actual: ${money(a.currentPeriodActual)}, Budget: ${money(a.currentPeriodBudget)}, `
+          + `Variance: ${pct.toFixed(1)}%`
+    }));
   }
 
   // SECTION B2 — any negative income actual, no dollar floor. Income that was
@@ -1001,7 +1111,12 @@ function buildIncomeStatementFindings(x) {
   for (const a of (x.incomeAccounts || [])) {
     if (sectionAAccounts.has(String(a.accountNumber))) continue;
     if (!isNum(a.currentPeriodActual) || a.currentPeriodActual >= 0) continue;
-    items.push(`Negative income: ${a.accountName} (${a.accountNumber}) ${parenAmount(a.currentPeriodActual)}`);
+    out.push(finding({
+      check: 'negativeIncome', column: 'incomeStatement', severity: 'warning',
+      account: acctPrefix(a.accountNumber), accountNumber: a.accountNumber, accountName: a.accountName,
+      figures: { actual: a.currentPeriodActual },
+      text: `Negative income: ${a.accountName} (${a.accountNumber}) ${parenAmount(a.currentPeriodActual)}`
+    }));
   }
 
   // SECTION C — negative expense actuals. Only the actual column decides this;
@@ -1009,7 +1124,12 @@ function buildIncomeStatementFindings(x) {
   for (const a of (x.expenseAccounts || [])) {
     if (!isNum(a.currentPeriodActual) || a.currentPeriodActual >= 0) continue;
     if (Math.abs(a.currentPeriodActual) < NEGATIVE_EXPENSE_MIN) continue;
-    items.push(`Negative expense: ${a.accountName} (${a.accountNumber}) ${parenAmount(a.currentPeriodActual)}`);
+    out.push(finding({
+      check: 'negativeExpense', column: 'incomeStatement', severity: 'warning',
+      account: acctPrefix(a.accountNumber), accountNumber: a.accountNumber, accountName: a.accountName,
+      figures: { actual: a.currentPeriodActual },
+      text: `Negative expense: ${a.accountName} (${a.accountNumber}) ${parenAmount(a.currentPeriodActual)}`
+    }));
   }
 
   // SECTION D — expense variances over threshold and over the dollar floor.
@@ -1020,61 +1140,57 @@ function buildIncomeStatementFindings(x) {
     const pct = variancePct(a.currentPeriodActual, a.currentPeriodBudget);
     if (pct <= VARIANCE_PCT_THRESHOLD) continue;
     if (Math.abs(a.currentPeriodActual - a.currentPeriodBudget) < VARIANCE_MIN_DOLLARS) continue;
-    items.push(`Expense variance: ${a.accountName} (${a.accountNumber}) — `
-      + `Actual: ${money(a.currentPeriodActual)}, Budget: ${money(a.currentPeriodBudget)}, `
-      + `Variance: ${pct.toFixed(1)}%`);
+    out.push(finding({
+      check: 'expenseVariance', column: 'incomeStatement', severity: 'warning',
+      account: acctPrefix(a.accountNumber), accountNumber: a.accountNumber, accountName: a.accountName,
+      figures: { actual: a.currentPeriodActual, budget: a.currentPeriodBudget, pct, difference: a.currentPeriodActual - a.currentPeriodBudget },
+      text: `Expense variance: ${a.accountName} (${a.accountNumber}) — `
+          + `Actual: ${money(a.currentPeriodActual)}, Budget: ${money(a.currentPeriodBudget)}, `
+          + `Variance: ${pct.toFixed(1)}%`
+    }));
   }
 
+  return out;
+}
+
+// ---- Report fields, rendered from the findings above --------------------------
+// These four keep the shapes the report and the golden snapshot already expect.
+// Nothing downstream reads findings yet; that arrives with the exception rules.
+
+function checkBalanceColumn(col, column) { return renderFindingCell(balanceColumnFindings(col, column || 'bsOperating')); }
+function checkPrepaid(p) { return renderFindingCell(prepaidFindings(p)); }
+
+// The ledger cell is a list, not a sentence, so its findings stay separate rows.
+function renderLedgerField(fs) {
+  if (!fs.length) return 'OK';
+  if (fs.length === 1 && fs[0].notProvided) return 'Not provided';
+  return fs.map(f => f.text);
+}
+function checkLedgerAdjustments(x) { return renderLedgerField(ledgerFindings(x)); }
+
+function buildIncomeStatementFindings(x) {
+  const items = incomeStatementFindings(x).map(f => f.text);
   return items.length ? items : ['OK'];
 }
 
-// Homeowner ledger adjustments: a negative balance on any assessment type other
-// than PrePaid. These come from incorrect ledger adjustments and are easy to miss
-// because an account can carry an equal positive and negative balance in two
-// different line items, netting to zero at the account level while both rows are
-// wrong. Each row is judged on its own balance, never on the account total.
-// Warning tier - it is a bookkeeping correction, not a broken statement.
-function checkLedgerAdjustments(x) {
-  // Only an explicit true means the aging report was examined. Anything else -
-  // absent, false, or an older extraction that predates this check - is
-  // "Not provided", never a clean bill of health we did not actually verify.
-  if (!x || x.agingReportPresent !== true) return 'Not provided';
-  const rows = (x.agingNegatives || []).filter(r =>
-    r && isNum(r.balance) && r.balance < 0 &&
-    // Re-apply the PrePaid exclusion here so a stray one cannot slip through.
-    !/^\s*pre-?paid/i.test(String(r.lineItem || ''))
-  );
-  if (!rows.length) return 'OK';
-  return rows.map(r =>
-    `${r.accountCode || '?'} ${r.ownerName || ''} — ${r.lineItem}: ${parenAmount(r.balance)}`.replace(/\s+—/, ' —')
-  );
-}
-
-// Turn one extraction into the four report fields.
+// Turn one extraction into the report record: the four rendered fields the
+// report has always used, plus the findings they were rendered from.
 function buildFindings(x) {
   const bs = x.balanceSheet || {};
-  let bsOperating = checkBalanceColumn(bs.operating);
-  const bsReserve = checkBalanceColumn(bs.reserve);
-
-  // Low Cash rides along in the Operating cell, as it has since v34.
-  const cash = bs.cashOperating, budget = x.annualIncomeBudget;
-  if (isNum(cash) && isNum(budget) && budget > 0) {
-    const ratio = cash / budget;
-    const flag = ratio < VERY_LOW_CASH_RATIO
-      ? `Very Low Cash (${money(cash)} balance, ${money(budget)} annual budget)`
-      : ratio < LOW_CASH_RATIO
-        ? `Low Cash (${money(cash)} balance, ${money(budget)} annual budget)`
-        : null;
-    if (flag) bsOperating = (bsOperating === 'OK') ? flag : bsOperating + ' | ' + flag;
-  }
+  const operating = balanceColumnFindings(bs.operating, 'bsOperating').concat(lowCashFindings(x));
+  const reserve   = balanceColumnFindings(bs.reserve, 'bsReserve');
+  const prepaid   = prepaidFindings(x.prepaid);
+  const ledger    = ledgerFindings(x);
+  const income    = incomeStatementFindings(x);
 
   return {
     communityName: x.communityName || 'Unknown',
-    bsOperating,
-    bsReserve,
-    prepaid: checkPrepaid(x.prepaid),
-    ledgerAdjustments: checkLedgerAdjustments(x),
-    incomeStatement: buildIncomeStatementFindings(x)
+    bsOperating: renderFindingCell(operating),
+    bsReserve: renderFindingCell(reserve),
+    prepaid: renderFindingCell(prepaid),
+    ledgerAdjustments: renderLedgerField(ledger),
+    incomeStatement: income.length ? income.map(f => f.text) : ['OK'],
+    findings: [].concat(operating, reserve, prepaid, ledger, income)
   };
 }
 

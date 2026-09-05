@@ -32,6 +32,18 @@ Only run `--update` once you have confirmed every reported change is intended.
 The snapshot is the record of what "correct" looks like; updating it without
 reading the diff defeats the point.
 
+### The identity invariant
+
+Alongside the snapshot comparison, this check asserts that every report cell is
+exactly reproducible from the finding records it was rendered from, on all 110
+communities. The findings engine builds structured records — `{ check, column,
+severity, account, figures, text }` — and renders the cells from them; the
+exception rules match on the record, never on the sentence.
+
+If that invariant ever fails, the record and the wording have drifted apart, and
+an exception would silence something other than the item it names. Treat a
+failure here as a bug in the engine, not a snapshot to update.
+
 ### Fixtures are deliberately not committed
 
 `tests/golden/` is gitignored. **This repository is public** — it is served as a
