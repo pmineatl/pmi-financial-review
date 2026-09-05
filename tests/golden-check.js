@@ -30,6 +30,15 @@ eval(src.slice(src.indexOf('// ===== FINDINGS ENGINE ====='), src.indexOf('// ==
 
 const extractions = JSON.parse(fs.readFileSync(EXTRACTIONS, 'utf8'));
 const current = {};
+const snapshotOf = r => ({
+  communityName: r.communityName,
+  bsOperating: r.bsOperating, bsReserve: r.bsReserve, prepaid: r.prepaid,
+  ledgerAdjustments: r.ledgerAdjustments, incomeStatement: r.incomeStatement,
+  // Status is what a reader acts on, so a change in how it is graded has to
+  // show up here rather than only in the cells behind it.
+  status: communityStatus(r, 'screen'),
+  accountingStatus: communityStatus(r, 'accounting')
+});
 for (const [community, extracted] of Object.entries(extractions)) {
   current[community] = buildFindings(extracted);
 }
@@ -75,7 +84,9 @@ const findingCount = Object.values(current).reduce((n, r) => n + r.findings.leng
 console.log(`Identity: ${Object.keys(current).length} communities, ${findingCount} findings, every cell reproducible from its findings.`);
 
 if (process.argv.includes('--update')) {
-  fs.writeFileSync(SNAPSHOT, JSON.stringify(current, null, 1));
+  const projected = {};
+  for (const [k, v] of Object.entries(current)) projected[k] = snapshotOf(v);
+  fs.writeFileSync(SNAPSHOT, JSON.stringify(projected, null, 1));
   console.log(`Snapshot updated: ${Object.keys(current).length} communities.`);
   process.exit(0);
 }
@@ -86,15 +97,15 @@ if (!fs.existsSync(SNAPSHOT)) {
 }
 
 const expected = JSON.parse(fs.readFileSync(SNAPSHOT, 'utf8'));
-const fields = ['bsOperating', 'bsReserve', 'prepaid'];
+const fields = ['bsOperating', 'bsReserve', 'prepaid', 'ledgerAdjustments', 'status', 'accountingStatus'];
 let changed = 0;
 
 for (const community of Object.keys(expected)) {
-  const was = expected[community], now = current[community];
+  const was = expected[community], now = snapshotOf(current[community]);
   if (!now) { console.log(`MISSING  ${community}`); changed++; continue; }
   const diffs = [];
   for (const f of fields) {
-    if (was[f] !== now[f]) diffs.push(`  ${f}\n      was: ${was[f]}\n      now: ${now[f]}`);
+    if (JSON.stringify(was[f]) !== JSON.stringify(now[f])) diffs.push(`  ${f}\n      was: ${was[f]}\n      now: ${now[f]}`);
   }
   const wasSet = new Set(was.incomeStatement || []);
   const nowSet = new Set(now.incomeStatement || []);

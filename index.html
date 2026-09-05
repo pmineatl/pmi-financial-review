@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v50</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v51</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -1194,6 +1194,46 @@ function buildFindings(x) {
   };
 }
 
+
+// ---- Community status ---------------------------------------------------------
+// Graded from the findings' severities, never by reading the rendered cell back.
+// A cell is a sentence, and two findings can share it joined by " | ", so a test
+// like /Low Cash/ against that sentence cannot tell whether the cash flag is the
+// whole story or is sitting next to an out-of-balance column. It could not, and
+// a plain Low Cash flag quietly downgraded an imbalance from critical to warning
+// until v51. Severity is carried on the finding, so nothing has to be re-read.
+//
+// The three surfaces grade different things, which is why the scope is named:
+// the accounting sheet lists Section A and grades on that, the on-screen table
+// lists every income item and grades on all of them, and a manager tab shows
+// only that manager's income items.
+const STATUS_CRITICAL_COLUMNS = ['bsOperating', 'bsReserve', 'prepaid'];
+const STATUS_SCOPES = {
+  screen:     { columns: ['bsOperating', 'bsReserve', 'prepaid', 'ledgerAdjustments', 'incomeStatement'], income: 'all' },
+  accounting: { columns: ['bsOperating', 'bsReserve', 'prepaid', 'ledgerAdjustments', 'incomeStatement'], income: 'sectionA' },
+  manager:    { columns: ['incomeStatement'], income: 'other' }
+};
+
+// Findings that still count once exceptions have had their say. An `info`
+// finding is recorded and displayed but argues for nothing - that is what an
+// unexamined aging report has always been, and what a downgrade can turn a
+// finding into.
+function liveFindings(record, scopeName) {
+  const scope = STATUS_SCOPES[scopeName] || STATUS_SCOPES.screen;
+  return ((record && record.findings) || []).filter(f => {
+    if (f.severity === 'info') return false;
+    if (!scope.columns.includes(f.column)) return false;
+    if (f.column !== 'incomeStatement' || scope.income === 'all') return true;
+    return scope.income === 'sectionA' ? f.check === 'sectionA' : f.check !== 'sectionA';
+  });
+}
+
+function communityStatus(record, scopeName) {
+  const live = liveFindings(record, scopeName);
+  if (live.some(f => f.severity === 'critical' && STATUS_CRITICAL_COLUMNS.includes(f.column))) return 'CRITICAL';
+  return live.length ? 'WARNING' : 'OK';
+}
+
 // ===== EXCEPTIONS =====
 // Exceptions are applied to a finished run, never during it: the analysis is
 // unchanged and a rule can be edited and re-applied to a saved session without
@@ -1879,17 +1919,13 @@ function renderResults(data, monthDisplay) {
   tbody.innerHTML = '';
 
   data.forEach(a => {
-    const bsOpOK = isOK(a.bsOperating), bsResOK = isOK(a.bsReserve), ppOK = isOK(a.prepaid), isOKr = isOK(a.incomeStatement);
-    // Low Cash = Warning tier; Very Low Cash or other BS issue = Critical tier
-    const bsOpLowCash = isLowCash(a.bsOperating);
-    // Ledger adjustments are a bookkeeping correction, so they raise a warning
-    // and never a critical, no matter how many rows are affected.
-    const ledgerOK = isOK(a.ledgerAdjustments) || isNotProvided(a.ledgerAdjustments);
-    const hasCrit = (!bsOpOK && !bsOpLowCash) || !bsResOK || !ppOK;
-    const hasWarn = bsOpLowCash || !isOKr || !ledgerOK;
-    if (hasCrit) crit++; else if (hasWarn) warn++; else ok++;
+    // Graded from the findings, not by reading the cells back - see
+    // communityStatus. The table lists every income item, so it grades on all
+    // of them; Low Cash and ledger adjustments carry their own warning tier.
+    const status = communityStatus(a, 'screen');
+    if (status === 'CRITICAL') crit++; else if (status === 'WARNING') warn++; else ok++;
     const tr = document.createElement('tr');
-    tr.className = hasCrit ? 'row-critical' : hasWarn ? 'row-warning' : 'row-ok';
+    tr.className = status === 'CRITICAL' ? 'row-critical' : status === 'WARNING' ? 'row-warning' : 'row-ok';
     tr.innerHTML = `<td>${esc(a.communityName||'Unknown')}</td><td>${renderCell(a.bsOperating)}</td><td>${renderCell(a.bsReserve)}</td><td>${renderCell(a.prepaid)}</td><td>${renderLedgerCell(a.ledgerAdjustments)}</td><td>${renderISCell(a.incomeStatement)}</td>`;
     tbody.appendChild(tr);
   });
@@ -2034,13 +2070,11 @@ async function buildExcelWorkbook(reportType) {
 
     globalResults.forEach(a => {
       const bsOpOK = isOK(a.bsOperating), bsResOK = isOK(a.bsReserve), ppOK = isOK(a.prepaid);
-      const bsOpLC = isLowCash(a.bsOperating);
       const secA   = getSectionAItems(a.incomeStatement);
       const secAOK = isOK(secA);
-      const ledgerOK = isOK(a.ledgerAdjustments) || isNotProvided(a.ledgerAdjustments);
-      const hasCrit = (!bsOpOK && !bsOpLC) || !bsResOK || !ppOK;
-      // Ledger adjustments only ever raise a warning, never a critical.
-      const status  = hasCrit ? 'CRITICAL' : (bsOpLC || !secAOK || !ledgerOK) ? 'WARNING' : 'OK';
+      // This sheet lists Section A only, so it grades on Section A only. Ledger
+      // adjustments raise a warning and never a critical, however many rows.
+      const status = communityStatus(a, 'accounting');
       const sc = statusColors(status);
 
       const ledgerRows = Array.isArray(a.ledgerAdjustments) ? a.ledgerAdjustments : [];
@@ -2133,8 +2167,7 @@ async function buildExcelWorkbook(reportType) {
 
       rows.forEach(a => {
         const mgr    = getManagerItems(a.incomeStatement);
-        const mgrOK  = isOK(mgr);
-        const status = mgrOK ? 'OK' : 'WARNING';
+        const status = communityStatus(a, 'manager');
         const sc     = statusColors(status);
 
         const dr = sheet.addRow([a.communityName || 'Unknown', '', status]);

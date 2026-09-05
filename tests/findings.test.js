@@ -276,5 +276,66 @@ section('Finding severity and absent data');
   t('healthy cash produces no finding', cash(50, 100), undefined);
 }
 
+// ---------------------------------------------------------------- status tiers
+// Status is graded from the findings' severities. It used to be read back out of
+// the rendered cell, which could not distinguish a cash flag that was the whole
+// story from one sitting beside an imbalance.
+section('Community status');
+const rec = over => buildFindings(Object.assign({
+  prepaid: { balanceSheetAmount: 1, homeownerListTotal: 1 },
+  agingReportPresent: true, agingNegatives: []
+}, over, {
+  balanceSheet: Object.assign({
+    operating: { totalAssets: 10, totalLiabilitiesAndEquity: 10 },
+    reserve: { totalAssets: 5, totalLiabilitiesAndEquity: 5 }
+  }, over.balanceSheet)
+}));
+
+t('a clean community is OK', communityStatus(rec({}), 'screen'), 'OK');
+t('an out-of-balance operating column is critical',
+  communityStatus(rec({ balanceSheet: { operating: { totalAssets: 100, totalLiabilitiesAndEquity: 60 } } }), 'screen'), 'CRITICAL');
+t('a missing reserve column is critical',
+  communityStatus(rec({ balanceSheet: { reserve: null } }), 'screen'), 'CRITICAL');
+t('low cash on its own is a warning',
+  communityStatus(rec({ balanceSheet: { cashOperating: 15 }, annualIncomeBudget: 100 }), 'screen'), 'WARNING');
+t('very low cash on its own is critical',
+  communityStatus(rec({ balanceSheet: { cashOperating: 5 }, annualIncomeBudget: 100 }), 'screen'), 'CRITICAL');
+
+// [regression] The cell reads "Out of balance … | Low Cash (…)". Grading that
+// sentence with /Low Cash/ said "warning", hiding an imbalance behind a cash
+// flag. It never fired on a real month, but it was one statement away.
+t('[regression] a low cash flag does not mask an imbalance',
+  communityStatus(rec({ balanceSheet: { operating: { totalAssets: 100, totalLiabilitiesAndEquity: 60 }, cashOperating: 15 }, annualIncomeBudget: 100 }), 'screen'),
+  'CRITICAL');
+t('[regression] nor does it mask a missing operating column',
+  communityStatus(rec({ balanceSheet: { operating: null, cashOperating: 15 }, annualIncomeBudget: 100 }), 'screen'),
+  'CRITICAL');
+
+t('an unexamined aging report is not a warning',
+  communityStatus(rec({ agingReportPresent: false }), 'screen'), 'OK');
+t('a negative non-PrePaid balance is a warning',
+  communityStatus(rec({ agingNegatives: [{ accountCode: 'A1', ownerName: 'Someone', lineItem: 'Assessments', balance: -25 }] }), 'screen'), 'WARNING');
+
+// The three surfaces grade different slices of the income statement.
+{
+  const r = rec({
+    specialIncome: [{ accountNumber: '30700-00', currentPeriodActual: 1475 }],
+    expenseAccounts: [{ accountNumber: '40700', accountName: 'Insurance', currentPeriodActual: 4200, currentPeriodBudget: 3500 }]
+  });
+  t('the screen grades on every income item', communityStatus(r, 'screen'), 'WARNING');
+  t('the accounting sheet grades on Section A', communityStatus(r, 'accounting'), 'WARNING');
+  t('a manager tab grades on the items it shows', communityStatus(r, 'manager'), 'WARNING');
+}
+{
+  const onlySectionA = rec({ specialIncome: [{ accountNumber: '30700-00', currentPeriodActual: 1475 }] });
+  t('a Section A item alone does not warn a manager tab', communityStatus(onlySectionA, 'manager'), 'OK');
+  t('but it does warn the accounting sheet', communityStatus(onlySectionA, 'accounting'), 'WARNING');
+}
+{
+  const onlyExpense = rec({ expenseAccounts: [{ accountNumber: '40700', accountName: 'Insurance', currentPeriodActual: 4200, currentPeriodBudget: 3500 }] });
+  t('an expense variance alone does not warn the accounting sheet', communityStatus(onlyExpense, 'accounting'), 'OK');
+  t('but it does warn the manager tab', communityStatus(onlyExpense, 'manager'), 'WARNING');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
