@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v49</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v50</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -1192,6 +1192,240 @@ function buildFindings(x) {
     incomeStatement: income.length ? income.map(f => f.text) : ['OK'],
     findings: [].concat(operating, reserve, prepaid, ledger, income)
   };
+}
+
+// ===== EXCEPTIONS =====
+// Exceptions are applied to a finished run, never during it: the analysis is
+// unchanged and a rule can be edited and re-applied to a saved session without
+// spending anything. Rules match on the finding record - check, account,
+// community - never on the sentence the report prints.
+//
+// Nothing is deleted. A suppressed finding is moved onto the Exceptions Applied
+// sheet with the rule and the reason that removed it, so a report always says
+// what it is not showing you.
+
+const EXCEPTION_CHECKS = [
+  'bsOperating', 'bsReserve', 'lowCash', 'prepaid', 'ledgerAdjustment',
+  'sectionA', 'incomeVariance', 'negativeIncome', 'negativeExpense', 'expenseVariance'
+];
+// Written the way someone types them into a spreadsheet.
+const CHECK_ALIASES = {
+  'bsoperating': 'bsOperating', 'operating': 'bsOperating', 'balancesheetoperating': 'bsOperating',
+  'bsreserve': 'bsReserve', 'reserve': 'bsReserve', 'balancesheetreserve': 'bsReserve',
+  'lowcash': 'lowCash', 'cash': 'lowCash',
+  'prepaid': 'prepaid', 'prepaidreconciliation': 'prepaid',
+  'ledgeradjustment': 'ledgerAdjustment', 'ledgeradjustments': 'ledgerAdjustment', 'aging': 'ledgerAdjustment',
+  'sectiona': 'sectionA', 'specialincome': 'sectionA',
+  'incomevariance': 'incomeVariance', 'negativeincome': 'negativeIncome',
+  'negativeexpense': 'negativeExpense', 'expensevariance': 'expenseVariance'
+};
+const EXCEPTION_ACTIONS = ['suppress', 'downgrade', 'threshold'];
+// Descending: a downgrade moves one step to the right unless told otherwise.
+const SEVERITY_ORDER = ['critical', 'warning', 'info'];
+// Only these two carry a variance a threshold rule can re-judge.
+const THRESHOLD_CHECKS = ['incomeVariance', 'expenseVariance'];
+
+const normRuleText = s => String(s == null ? '' : s).trim();
+const isWildcard = s => s === '' || s === '*' || s.toLowerCase() === 'all' || s.toLowerCase() === 'any';
+
+// "25%" -> percent, "$2,500" -> dollars, bare number -> percent. Percentages are
+// what the engine already thinks in, so a bare number means the familiar thing.
+function parseThresholdValue(raw) {
+  const s = normRuleText(raw).replace(/,/g, '');
+  if (!s) return { error: 'threshold needs a value, e.g. 25% or $2500' };
+  const dollars = /^\$/.test(s);
+  const num = parseFloat(s.replace(/^[$]/, '').replace(/%$/, ''));
+  if (!isFinite(num) || num < 0) return { error: `"${raw}" is not a threshold I can read - use 25% or $2500` };
+  return { unit: dollars ? 'dollars' : 'percent', amount: num };
+}
+
+// Turn one spreadsheet row into a rule, or into the reason it cannot be one.
+// Errors are returned rather than thrown: the panel lists every bad row at once
+// instead of stopping at the first.
+function parseExceptionRule(raw, index) {
+  const where = `row ${index + 1}`;
+  const community = normRuleText(raw.community);
+  const reason = normRuleText(raw.reason);
+  const expiresRaw = normRuleText(raw.expires);
+  const action = normRuleText(raw.action).toLowerCase() || 'suppress';
+  const checkRaw = normRuleText(raw.check);
+  const accountRaw = normRuleText(raw.account);
+
+  if (!reason) return { error: `${where}: every rule needs a reason - it is what the report shows in place of the finding` };
+  if (!EXCEPTION_ACTIONS.includes(action)) {
+    return { error: `${where}: "${raw.action}" is not an action - use ${EXCEPTION_ACTIONS.join(', ')}` };
+  }
+
+  let check = null;
+  if (!isWildcard(checkRaw)) {
+    check = CHECK_ALIASES[checkRaw.toLowerCase().replace(/[^a-z]/g, '')] || null;
+    if (!check) return { error: `${where}: "${checkRaw}" is not a check - use one of ${EXCEPTION_CHECKS.join(', ')}` };
+  }
+
+  const account = isWildcard(accountRaw) ? null : accountRaw.split('-')[0].trim();
+  if (account && !/^\d+$/.test(account)) {
+    return { error: `${where}: "${accountRaw}" is not an account number` };
+  }
+
+  if (!expiresRaw) return { error: `${where}: every rule needs an expiry date, so it gets looked at again` };
+  const expires = new Date(expiresRaw);
+  if (isNaN(expires.getTime())) return { error: `${where}: "${expiresRaw}" is not a date I can read - use YYYY-MM-DD` };
+
+  const rule = {
+    index, community: isWildcard(community) ? null : community,
+    check, account, action, reason,
+    expires: expires.toISOString().slice(0, 10)
+  };
+
+  if (action === 'threshold') {
+    if (check && !THRESHOLD_CHECKS.includes(check)) {
+      return { error: `${where}: a threshold only makes sense on ${THRESHOLD_CHECKS.join(' or ')}, not ${check}` };
+    }
+    const parsed = parseThresholdValue(raw.value);
+    if (parsed.error) return { error: `${where}: ${parsed.error}` };
+    rule.threshold = parsed;
+  }
+  if (action === 'downgrade') {
+    const target = normRuleText(raw.value).toLowerCase();
+    if (target && !SEVERITY_ORDER.includes(target)) {
+      return { error: `${where}: "${raw.value}" is not a severity - use ${SEVERITY_ORDER.join(', ')}` };
+    }
+    rule.downgradeTo = target || null; // null = one step down
+  }
+  return { rule };
+}
+
+// A rule names a community the way a person says it - "St Ives", not "St Ives
+// Country Club Homeowners Association, Inc." Resolve on the normalised name:
+// exact first, then a unique prefix. Never a substring: "Country Club" appears
+// in both "Country Club of the South" and "St Ives Country Club", and silently
+// applying an exception to the wrong community is the worst thing this feature
+// could do.
+function resolveRuleCommunity(text, communityNames) {
+  const key = normCommunity(text);
+  if (!key) return { error: 'blank community' };
+  const exact = communityNames.filter(n => normCommunity(n) === key);
+  if (exact.length === 1) return { matched: exact };
+  if (exact.length > 1) return { matched: exact }; // same name twice in one run
+  const prefix = communityNames.filter(n => normCommunity(n).startsWith(key));
+  if (prefix.length === 1) return { matched: prefix };
+  if (prefix.length > 1) {
+    return { error: `"${text}" matches ${prefix.length} communities (${prefix.slice(0, 3).join('; ')}${prefix.length > 3 ? '; …' : ''}) - write more of the name` };
+  }
+  return { error: `no community named "${text}" in this run` };
+}
+
+function ruleMatchesFinding(rule, f) {
+  if (rule.check && rule.check !== f.check) return false;
+  if (rule.account && rule.account !== f.account) return false;
+  return true;
+}
+
+// A threshold rule re-judges the finding from the figures it kept. Returns true
+// when the finding survives the new threshold.
+function findingClearsThreshold(rule, f) {
+  const t = rule.threshold;
+  if (t.unit === 'percent') {
+    return isNum(f.figures.pct) ? f.figures.pct > t.amount : true;
+  }
+  return isNum(f.figures.difference) ? Math.abs(f.figures.difference) >= t.amount : true;
+}
+
+const downgradeSeverity = (severity, target) => {
+  if (target) return target;
+  const i = SEVERITY_ORDER.indexOf(severity);
+  return i < 0 || i === SEVERITY_ORDER.length - 1 ? severity : SEVERITY_ORDER[i + 1];
+};
+
+// Re-render a record's report cells from whatever findings survived. This is the
+// identity the golden check asserts on every community, used in reverse.
+function renderRecordFromFindings(record, findings) {
+  const inColumn = c => findings.filter(f => f.column === c);
+  const isItems = inColumn('incomeStatement').map(f => f.text);
+  return Object.assign({}, record, {
+    bsOperating: renderFindingCell(inColumn('bsOperating')),
+    bsReserve: renderFindingCell(inColumn('bsReserve')),
+    prepaid: renderFindingCell(inColumn('prepaid')),
+    ledgerAdjustments: renderLedgerField(inColumn('ledgerAdjustments')),
+    incomeStatement: isItems.length ? isItems : ['OK'],
+    findings
+  });
+}
+
+// Apply the rule set to a finished run. Returns new records plus everything the
+// panel and the Exceptions Applied sheet need to explain what happened.
+function applyExceptions(records, rules, asOf) {
+  const today = (asOf ? new Date(asOf) : new Date()).toISOString().slice(0, 10);
+  const names = records.map(r => r.communityName);
+  const applied = [];      // one entry per finding an exception touched
+  const problems = [];     // rules that could not be used, with the reason
+  const usage = new Map(); // rule index -> how many findings it touched
+
+  const live = [];
+  for (const rule of rules) {
+    if (rule.expires < today) {
+      problems.push({ rule, kind: 'expired', message: `expired ${rule.expires} - renew it or let the finding through` });
+      continue;
+    }
+    if (rule.community) {
+      const res = resolveRuleCommunity(rule.community, names);
+      if (res.error) { problems.push({ rule, kind: 'unmatched', message: res.error }); continue; }
+      live.push(Object.assign({}, rule, { communities: new Set(res.matched.map(normCommunity)) }));
+    } else {
+      live.push(Object.assign({}, rule, { communities: null }));
+    }
+  }
+
+  const out = records.map(record => {
+    const key = normCommunity(record.communityName);
+    const forThis = live.filter(r => !r.communities || r.communities.has(key));
+    if (!forThis.length) return record;
+
+    const kept = [];
+    let changed = false;
+    for (const f of (record.findings || [])) {
+      let current = f, removedBy = null, changes = [];
+      for (const rule of forThis) {
+        if (!ruleMatchesFinding(rule, current)) continue;
+        if (rule.action === 'suppress') { removedBy = rule; break; }
+        if (rule.action === 'threshold') {
+          if (!findingClearsThreshold(rule, current)) { removedBy = rule; break; }
+          continue; // survives; the rule did not change it
+        }
+        if (rule.action === 'downgrade') {
+          const next = downgradeSeverity(current.severity, rule.downgradeTo);
+          if (next === current.severity) continue;
+          current = Object.assign({}, current, { severity: next, downgradedFrom: f.severity, exception: { reason: rule.reason, expires: rule.expires } });
+          changes.push(rule);
+        }
+      }
+      if (removedBy) {
+        changed = true;
+        usage.set(removedBy.index, (usage.get(removedBy.index) || 0) + 1);
+        applied.push({
+          community: record.communityName, action: removedBy.action, rule: removedBy,
+          finding: f, outcome: removedBy.action === 'threshold' ? 'below threshold' : 'suppressed'
+        });
+        continue;
+      }
+      for (const rule of changes) {
+        changed = true;
+        usage.set(rule.index, (usage.get(rule.index) || 0) + 1);
+        applied.push({
+          community: record.communityName, action: 'downgrade', rule,
+          finding: f, outcome: `${f.severity} → ${current.severity}`
+        });
+      }
+      kept.push(current);
+    }
+    return changed ? renderRecordFromFindings(record, kept) : record;
+  });
+
+  for (const rule of live) {
+    if (!usage.has(rule.index)) problems.push({ rule, kind: 'unused', message: 'matched nothing in this run' });
+  }
+
+  return { records: out, applied, problems };
 }
 
 // ===== EXTRACTION =====

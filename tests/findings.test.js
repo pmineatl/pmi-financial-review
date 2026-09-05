@@ -12,7 +12,7 @@ const path = require('path');
 
 const APP = path.join(__dirname, '..', 'hoa-financial-review.html');
 const src = fs.readFileSync(APP, 'utf8').match(/<script>([\s\S]*)<\/script>/)[1];
-const engine = src.slice(src.indexOf('// ===== FINDINGS ENGINE ====='), src.indexOf('// ===== EXTRACTION ====='));
+const engine = src.slice(src.indexOf('// ===== FINDINGS ENGINE ====='), src.indexOf('// ===== EXCEPTIONS ====='));
 eval(engine);
 
 let pass = 0, fail = 0;

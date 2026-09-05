@@ -26,7 +26,7 @@ if (!fs.existsSync(EXTRACTIONS)) {
 
 const APP = path.join(__dirname, '..', 'hoa-financial-review.html');
 const src = fs.readFileSync(APP, 'utf8').match(/<script>([\s\S]*)<\/script>/)[1];
-eval(src.slice(src.indexOf('// ===== FINDINGS ENGINE ====='), src.indexOf('// ===== EXTRACTION =====')));
+eval(src.slice(src.indexOf('// ===== FINDINGS ENGINE ====='), src.indexOf('// ===== EXCEPTIONS =====')));
 
 const extractions = JSON.parse(fs.readFileSync(EXTRACTIONS, 'utf8'));
 const current = {};

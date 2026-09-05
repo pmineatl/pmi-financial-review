@@ -14,6 +14,19 @@ expense. Don't delete those cases.
 
 Run it after any change to thresholds, formats, or section rules.
 
+## `node tests/exceptions.test.js`
+
+Unit tests for the exception rules — parsing a rule, resolving the community it
+names, and applying suppress / downgrade / threshold to a finished run. All data
+is synthetic.
+
+Community names are matched by **prefix, never by substring**, and an ambiguous
+prefix is refused rather than guessed. That is not a theoretical concern: the
+real roster contains ten short names that each fit two communities — phase one
+and phase two of the same subdivision, a community and its park, two streets off
+the same name. An exception applied to the wrong community is the worst thing
+this feature could do, so the refusal path has its own cases and should keep them.
+
 ## `node tests/golden-check.js`
 
 Golden-master check across a full validated month (110 communities), so a rule
