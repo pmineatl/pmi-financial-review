@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v46</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v47</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -176,6 +176,21 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
       <div id="cincPreviewList" style="margin:0 0 10px 0; max-height:260px; overflow-y:auto;"></div>
       <button class="resume-banner-btn resume-view-btn" id="cincImportBtn">Import Selected →</button>
       <button class="resume-banner-btn resume-clear-btn" id="cincCancelBtn">Cancel</button>
+    </div>
+  </div>
+
+  <div style="margin-bottom:16px;">
+    <button class="btn-sec" id="mgrToggle">👤 Manager Assignments</button>
+    <div id="mgrPanel" style="display:none; margin-top:12px;">
+      <div class="progress-label" style="margin-bottom:8px;">Assignments come from CINC, which is the system of record. Edit a row only to override CINC or to fill a gap; overrides are kept on this computer and survive a refresh.</div>
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap;">
+        <button class="run-btn" id="mgrRefresh" style="padding:7px 16px; font-size:12px;">Refresh from CINC</button>
+        <input type="text" id="mgrFilter" placeholder="Filter communities…" autocomplete="off"
+               style="flex:1; min-width:180px; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text); font-family:'IBM Plex Mono',monospace; font-size:11px; padding:6px 9px; outline:none;"/>
+        <button class="resume-banner-btn resume-clear-btn" id="mgrClearOverrides" style="padding:5px 10px;">Clear overrides</button>
+        <span class="progress-label" id="mgrStatus" style="margin:0;"></span>
+      </div>
+      <div id="mgrList" style="max-height:300px; overflow-y:auto; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface);"></div>
     </div>
   </div>
 
@@ -578,6 +593,218 @@ document.getElementById('cincSelectNone').addEventListener('click', () => {
   updateCincSelectedCount();
 });
 cincPreviewList.addEventListener('change', updateCincSelectedCount);
+
+// ===== MANAGER ASSIGNMENTS =====
+// CINC already holds the manager for each association and is kept current, so it
+// is the source of truth here. The app caches the last fetch so a run still works
+// if the Worker is unreachable, and keeps a small override map for the gaps -
+// only the exceptions, never a second copy of the whole roster.
+
+const MANAGER_MAP_KEY = 'pmi_manager_map';           // cached from CINC
+const MANAGER_OVERRIDE_KEY = 'pmi_manager_overrides'; // local exceptions only
+const UNASSIGNED = 'Unassigned';
+
+// Community names reach us from three places - CINC's association list, the
+// document fetch, and the model's transcription - with small differences in
+// punctuation and trailing spaces. Compare on letters and digits only.
+const normCommunity = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+function loadJSON(key) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : {}; }
+  catch (_) { return {}; }
+}
+function saveJSON(key, obj) {
+  try { localStorage.setItem(key, JSON.stringify(obj)); } catch (_) {}
+}
+
+let managerMap = loadJSON(MANAGER_MAP_KEY);           // normalised name -> {manager, display, active}
+let managerOverrides = loadJSON(MANAGER_OVERRIDE_KEY); // normalised name -> manager
+
+async function fetchManagerAssignments() {
+  const data = await cincWorkerFetch('/api/cinc/managers');
+  const next = {};
+  // Active associations win when two rows normalise to the same key, but inactive
+  // ones are kept: a community can be deactivated in CINC and still appear in
+  // that month's financials batch.
+  for (const a of (data.items || []).slice().sort((x, y) => (y.isActive === true) - (x.isActive === true))) {
+    const key = normCommunity(a.association);
+    if (!key || next[key]) continue;
+    next[key] = { manager: (a.managerName || '').trim(), display: a.association, active: a.isActive === true };
+  }
+  managerMap = next;
+  saveJSON(MANAGER_MAP_KEY, managerMap);
+  return managerMap;
+}
+
+// Resolution order: local override, then CINC, then Unassigned.
+function managerForCommunity(name) {
+  const key = normCommunity(name);
+  if (managerOverrides[key]) return managerOverrides[key];
+  const hit = managerMap[key];
+  return (hit && hit.manager) ? hit.manager : UNASSIGNED;
+}
+
+// "Alice Abernathy" -> "Alice A". Excel caps sheet names at 31 characters and
+// rejects : \ / ? * [ ], so the short form is both friendlier and safer.
+function managerTabName(manager) {
+  if (!manager || manager === UNASSIGNED) return UNASSIGNED;
+  const parts = String(manager).trim().split(/\s+/);
+  const first = parts[0] || '';
+  const initial = parts.length > 1 ? parts[parts.length - 1][0] : '';
+  const name = (initial ? `${first} ${initial}` : first);
+  return name.replace(/[:\\\/?*\[\]]/g, '').slice(0, 31) || UNASSIGNED;
+}
+
+// Two managers can share a first name and last initial. Widen the shortened name
+// until each is distinct rather than letting Excel reject a duplicate sheet.
+function buildTabNames(managers) {
+  const out = {}, used = new Set();
+  for (const m of managers) {
+    let candidate = managerTabName(m);
+    if (used.has(candidate.toLowerCase())) {
+      const parts = String(m).trim().split(/\s+/);
+      const last = parts.length > 1 ? parts[parts.length - 1] : '';
+      for (let n = 2; n <= last.length; n++) {
+        const wider = `${parts[0]} ${last.slice(0, n)}`.slice(0, 31);
+        if (!used.has(wider.toLowerCase())) { candidate = wider; break; }
+      }
+      let suffix = 2;
+      while (used.has(candidate.toLowerCase())) candidate = `${managerTabName(m)} ${suffix++}`.slice(0, 31);
+    }
+    used.add(candidate.toLowerCase());
+    out[m] = candidate;
+  }
+  return out;
+}
+
+// Group this run's results by manager. Every manager who owns a community in the
+// roster gets an entry even when they have nothing to report, so an absent tab
+// never has to be interpreted.
+function groupResultsByManager(results) {
+  const groups = new Map();
+  const ensure = m => { if (!groups.has(m)) groups.set(m, []); return groups.get(m); };
+
+  // Seed from the roster so a manager with a clean month still gets a tab.
+  const inRun = new Set(results.map(r => normCommunity(r.communityName)));
+  for (const [key, entry] of Object.entries(managerMap)) {
+    if (entry.manager && inRun.has(key)) ensure(entry.manager);
+  }
+  for (const key of Object.keys(managerOverrides)) {
+    if (inRun.has(key)) ensure(managerOverrides[key]);
+  }
+
+  for (const r of results) ensure(managerForCommunity(r.communityName)).push(r);
+
+  return [...groups.entries()]
+    .sort((a, b) => a[0] === UNASSIGNED ? 1 : b[0] === UNASSIGNED ? -1 : a[0].localeCompare(b[0]));
+}
+
+
+// ===== MANAGER ASSIGNMENTS UI =====
+const mgrPanel = document.getElementById('mgrPanel');
+const mgrList = document.getElementById('mgrList');
+const mgrStatus = document.getElementById('mgrStatus');
+const mgrFilter = document.getElementById('mgrFilter');
+
+document.getElementById('mgrToggle').addEventListener('click', () => {
+  const opening = mgrPanel.style.display === 'none';
+  mgrPanel.style.display = opening ? 'block' : 'none';
+  if (opening) renderManagerList();
+});
+
+function managerRosterRows() {
+  // The roster is whatever CINC gave us, plus any community that only exists as
+  // an override (a manually uploaded package CINC has never heard of).
+  const rows = Object.entries(managerMap).map(([key, e]) => ({
+    key, display: e.display, active: e.active,
+    cinc: e.manager || '', effective: managerForCommunity(e.display)
+  }));
+  for (const key of Object.keys(managerOverrides)) {
+    if (!managerMap[key]) rows.push({ key, display: key, active: true, cinc: '', effective: managerOverrides[key] });
+  }
+  return rows.sort((a, b) => a.display.localeCompare(b.display));
+}
+
+function renderManagerList() {
+  const rows = managerRosterRows();
+  if (!rows.length) {
+    mgrList.innerHTML = '<div class="progress-label" style="padding:12px; margin:0;">No assignments loaded yet — press “Refresh from CINC”.</div>';
+    updateManagerStatus();
+    return;
+  }
+  mgrList.innerHTML = '';
+  rows.forEach(r => {
+    const overridden = Object.prototype.hasOwnProperty.call(managerOverrides, r.key);
+    const row = document.createElement('div');
+    row.className = 'mgr-row';
+    row.dataset.search = (r.display + ' ' + r.effective).toLowerCase();
+    row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:5px 10px; border-bottom:1px solid var(--border);';
+    row.innerHTML =
+      `<span style="flex:1; min-width:0; font-family:'IBM Plex Mono',monospace; font-size:11px; ` +
+      `color:${r.active ? 'var(--text)' : 'var(--text-dim)'}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">` +
+      `${esc(r.display)}${r.active ? '' : ' <span style="color:var(--text-dim)">(inactive)</span>'}</span>` +
+      `<input type="text" value="${esc(r.effective === UNASSIGNED ? '' : r.effective)}" placeholder="Unassigned" data-key="${esc(r.key)}" ` +
+      `style="width:170px; background:var(--bg); border:1px solid ${overridden ? 'var(--accent-gold)' : 'var(--border)'}; border-radius:5px; ` +
+      `color:var(--text); font-family:'IBM Plex Mono',monospace; font-size:11px; padding:4px 7px; outline:none;"/>` +
+      `<span style="width:74px; font-family:'IBM Plex Mono',monospace; font-size:10px; color:${overridden ? 'var(--accent-gold)' : 'var(--text-dim)'};">` +
+      `${overridden ? 'override' : (r.cinc ? 'CINC' : '—')}</span>`;
+    mgrList.appendChild(row);
+  });
+  applyManagerFilter();
+  updateManagerStatus();
+}
+
+function updateManagerStatus() {
+  const rows = managerRosterRows();
+  const assigned = rows.filter(r => r.effective !== UNASSIGNED).length;
+  const overrides = Object.keys(managerOverrides).length;
+  mgrStatus.textContent = rows.length
+    ? `${rows.length} communities · ${assigned} assigned · ${rows.length - assigned} unassigned${overrides ? ` · ${overrides} override${overrides > 1 ? 's' : ''}` : ''}`
+    : '';
+}
+
+function applyManagerFilter() {
+  const q = mgrFilter.value.trim().toLowerCase();
+  mgrList.querySelectorAll('.mgr-row').forEach(row => {
+    row.style.display = !q || row.dataset.search.includes(q) ? 'flex' : 'none';
+  });
+}
+mgrFilter.addEventListener('input', applyManagerFilter);
+
+// An edit that matches CINC is not an override - drop it so the row goes back to
+// tracking CINC automatically if the assignment changes there later.
+mgrList.addEventListener('change', e => {
+  const input = e.target.closest('input[data-key]');
+  if (!input) return;
+  const key = input.dataset.key;
+  const value = input.value.trim();
+  const cinc = (managerMap[key] && managerMap[key].manager) || '';
+  if (!value || value === cinc) delete managerOverrides[key];
+  else managerOverrides[key] = value;
+  saveJSON(MANAGER_OVERRIDE_KEY, managerOverrides);
+  renderManagerList();
+});
+
+document.getElementById('mgrClearOverrides').addEventListener('click', () => {
+  managerOverrides = {};
+  saveJSON(MANAGER_OVERRIDE_KEY, managerOverrides);
+  renderManagerList();
+});
+
+document.getElementById('mgrRefresh').addEventListener('click', async () => {
+  const btn = document.getElementById('mgrRefresh');
+  btn.disabled = true;
+  mgrStatus.textContent = 'Fetching assignments from CINC…';
+  try {
+    await fetchManagerAssignments();
+    renderManagerList();
+  } catch (err) {
+    mgrStatus.textContent = '';
+    showError('Could not load manager assignments: ' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 const MAX_PAGES = 99;
 
@@ -1500,32 +1727,53 @@ async function buildExcelWorkbook(reportType) {
 
   // ── MANAGER REPORT sheet ─────────────────────────────────────────────────
   if (reportType === 'manager') {
-    const ws = workbook.addWorksheet('Manager Review');
-    ws.columns = [{ width: 38 }, { width: 80 }, { width: 13 }];
-    addTitleRows(ws, 'PMI Northeast Atlanta — Manager Review', 3);
+    const ws = workbook.addWorksheet('All Communities');
+    // One sheet layout, used for the combined view and for each manager's tab.
+    function fillManagerSheet(sheet, heading, rows) {
+      sheet.columns = [{ width: 38 }, { width: 80 }, { width: 13 }];
+      addTitleRows(sheet, heading, 3);
 
-    const rh = ws.addRow(['Community', 'Income Statement Findings', 'Status']);
-    rh.height = 18; rh.eachCell(cell => hdrCell(cell));
+      const rh = sheet.addRow(['Community', 'Income Statement Findings', 'Status']);
+      rh.height = 18; rh.eachCell(cell => hdrCell(cell));
 
-    globalResults.forEach(a => {
-      const mgr    = getManagerItems(a.incomeStatement);
-      const mgrOK  = isOK(mgr);
-      const status = mgrOK ? 'OK' : 'WARNING';
-      const sc     = statusColors(status);
+      if (!rows.length) {
+        // A manager with a clean month still gets a tab, so a missing tab never
+        // has to be interpreted.
+        const er = sheet.addRow(['No communities with findings this period.', '', '']);
+        er.getCell(1).font = { name: 'Arial', size: 10, italic: true, color: { argb: DGRAY } };
+        return;
+      }
 
-      const dr = ws.addRow([a.communityName || 'Unknown', '', status]);
-      dr.height = 80;
-      dr.getCell(1).font      = { name: 'Arial', size: 10, bold: true };
-      dr.getCell(1).alignment = { vertical: 'top', wrapText: true };
+      rows.forEach(a => {
+        const mgr    = getManagerItems(a.incomeStatement);
+        const mgrOK  = isOK(mgr);
+        const status = mgrOK ? 'OK' : 'WARNING';
+        const sc     = statusColors(status);
 
-      const isCell = dr.getCell(2);
-      isCell.value     = buildISRichText(mgr);
-      isCell.alignment = { vertical: 'top', wrapText: true };
+        const dr = sheet.addRow([a.communityName || 'Unknown', '', status]);
+        dr.height = 80;
+        dr.getCell(1).font      = { name: 'Arial', size: 10, bold: true };
+        dr.getCell(1).alignment = { vertical: 'top', wrapText: true };
 
-      const stCell = dr.getCell(3);
-      stCell.font      = { name: 'Arial', size: 10, bold: true, color: { argb: sc.font } };
-      stCell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: sc.fill } };
-      stCell.alignment = { horizontal: 'center', vertical: 'top' };
+        const isCell = dr.getCell(2);
+        isCell.value     = buildISRichText(mgr);
+        isCell.alignment = { vertical: 'top', wrapText: true };
+
+        const stCell = dr.getCell(3);
+        stCell.font      = { name: 'Arial', size: 10, bold: true, color: { argb: sc.font } };
+        stCell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: sc.fill } };
+        stCell.alignment = { horizontal: 'center', vertical: 'top' };
+      });
+    }
+
+    fillManagerSheet(ws, 'PMI Northeast Atlanta — Manager Review', globalResults);
+
+    // Then one tab per manager, so each only has to open their own.
+    const groups = groupResultsByManager(globalResults);
+    const tabNames = buildTabNames(groups.map(([manager]) => manager));
+    groups.forEach(([manager, rows]) => {
+      const sheet = workbook.addWorksheet(tabNames[manager]);
+      fillManagerSheet(sheet, `${manager} — Manager Review`, rows);
     });
   }
 

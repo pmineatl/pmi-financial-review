@@ -125,6 +125,37 @@ async function handleDocument(request, env) {
   }
 }
 
+// Manager assignments live in CINC, which is already kept current, so the app
+// reads them rather than holding its own copy. Inactive associations are
+// included: a community can be deactivated in CINC and still appear in that
+// month's financials batch.
+async function handleManagers(request, env) {
+  if (!checkAuth(request, env)) return jsonResponse(request, 401, { error: 'Unauthorized' });
+
+  try {
+    const token = await getCincToken(env);
+    const res = await fetch(`${CINC_BASE_URL}/associations`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      return jsonResponse(request, res.status, { error: text.replace(/^"|"$/g, '') });
+    }
+    const data = JSON.parse(text);
+    const items = (Array.isArray(data) ? data : [])
+      .filter(a => a && a.Associationname)
+      .map(a => ({
+        association: a.Associationname,
+        code: a.AssociationIdLink || '',
+        managerName: (a.ManagerName || '').trim(),
+        isActive: a.isActive === true
+      }));
+    return jsonResponse(request, 200, { items });
+  } catch (err) {
+    return jsonResponse(request, 502, { error: 'Failed to reach CINC: ' + err.message });
+  }
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') {
@@ -141,6 +172,7 @@ export default {
     const { pathname } = new URL(request.url);
     if (request.method === 'GET' && pathname === '/api/cinc/list') return handleList(request, env);
     if (request.method === 'GET' && pathname === '/api/cinc/document') return handleDocument(request, env);
+    if (request.method === 'GET' && pathname === '/api/cinc/managers') return handleManagers(request, env);
 
     return jsonResponse(request, 404, { error: 'Not found' });
   }
