@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v51</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v52</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -176,6 +176,21 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
       <div id="cincPreviewList" style="margin:0 0 10px 0; max-height:260px; overflow-y:auto;"></div>
       <button class="resume-banner-btn resume-view-btn" id="cincImportBtn">Import Selected →</button>
       <button class="resume-banner-btn resume-clear-btn" id="cincCancelBtn">Cancel</button>
+    </div>
+  </div>
+
+  <div style="margin-bottom:16px;">
+    <button class="btn-sec" id="excToggle">⚖️ Exceptions</button>
+    <div id="excPanel" style="display:none; margin-top:12px;">
+      <div class="progress-label" style="margin-bottom:8px;">Exceptions are applied after the analysis, never during it — editing one and re-applying costs nothing. Nothing is deleted: every exception applied is listed on its own sheet in the report, with the reason. A blank community means every community.</div>
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap;">
+        <button class="run-btn" id="excAdd" style="padding:7px 16px; font-size:12px;">Add rule</button>
+        <label class="resume-banner-btn resume-view-btn" style="padding:5px 10px; cursor:pointer;">Import spreadsheet<input type="file" id="excImport" accept=".xlsx,.csv" style="display:none;"/></label>
+        <button class="resume-banner-btn resume-view-btn" id="excExport" style="padding:5px 10px;">Export spreadsheet</button>
+        <button class="resume-banner-btn resume-clear-btn" id="excClear" style="padding:5px 10px;">Delete all</button>
+        <span class="progress-label" id="excStatus" style="margin:0;"></span>
+      </div>
+      <div id="excList" style="max-height:340px; overflow-y:auto; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface);"></div>
     </div>
   </div>
 
@@ -338,7 +353,7 @@ document.getElementById('resumeViewBtn').addEventListener('click', () => {
   globalMonth = session.monthDisplay || '';
   if (session.month) document.getElementById('reportMonth').value = session.month;
   if (session.reviewer) document.getElementById('reviewerName').value = session.reviewer;
-  renderResults(results, session.monthDisplay || '');
+  renderResults(reviewedResults(), session.monthDisplay || '');
   document.getElementById('resumeBanner').style.display = 'none';
 });
 
@@ -898,6 +913,250 @@ async function toBase64(file) {
   // All PDFLib attempts failed — send raw bytes as-is
   return { base64: uint8ToBase64(rawBytes), pageCount: null, truncated: false };
 }
+
+// ===== EXCEPTIONS UI =====
+// The rules live in a spreadsheet in the shared drive - that is the copy people
+// read and edit - and a parsed copy is kept here so a run still works if the
+// file is not to hand. Import and Export keep the two in step.
+
+const EXCEPTION_ROWS_KEY = 'pmi_exception_rules';
+
+let exceptionRows = (() => {
+  try { const v = localStorage.getItem(EXCEPTION_ROWS_KEY); return v ? JSON.parse(v) : []; }
+  catch (_) { return []; }
+})();
+let lastReview = null; // { records, applied, problems } from the most recent run
+
+function saveExceptionRows() {
+  try { localStorage.setItem(EXCEPTION_ROWS_KEY, JSON.stringify(exceptionRows)); } catch (_) {}
+}
+
+// Parse every row, keeping the bad ones so the panel can show what is wrong
+// instead of quietly ignoring them.
+function readExceptionRules() {
+  const rules = [], errors = [];
+  exceptionRows.forEach((row, i) => {
+    if (row.enabled === false) return;
+    if (!EXCEPTION_COLUMNS.some(c => String(row[c] || '').trim())) return; // blank row
+    const out = parseExceptionRule(row, i);
+    if (out.error) errors.push({ index: i, message: out.error });
+    else rules.push(out.rule);
+  });
+  return { rules, errors };
+}
+
+// ---- the panel ---------------------------------------------------------------
+
+const excPanel = document.getElementById('excPanel');
+const excList = document.getElementById('excList');
+const excStatus = document.getElementById('excStatus');
+
+document.getElementById('excToggle').addEventListener('click', () => {
+  const opening = excPanel.style.display === 'none';
+  excPanel.style.display = opening ? 'block' : 'none';
+  if (opening) renderExceptionList();
+});
+
+const excInput = (row, i, col, width, placeholder) =>
+  `<input type="text" data-idx="${i}" data-col="${col}" value="${esc(row[col] == null ? '' : row[col])}" placeholder="${placeholder}" ` +
+  `style="width:${width}; background:var(--bg); border:1px solid var(--border); border-radius:5px; color:var(--text); ` +
+  `font-family:'IBM Plex Mono',monospace; font-size:11px; padding:4px 7px; outline:none;"/>`;
+
+function renderExceptionList() {
+  if (!exceptionRows.length) {
+    excList.innerHTML = '<div class="progress-label" style="padding:12px; margin:0;">No exceptions yet — “Add rule”, or import the spreadsheet.</div>';
+    updateExceptionStatus();
+    return;
+  }
+  const problemFor = {};
+  if (lastReview) for (const p of lastReview.problems) problemFor[p.rule.index] = p;
+  const errors = {};
+  for (const e of readExceptionRules().errors) errors[e.index] = e.message;
+
+  excList.innerHTML = '';
+  exceptionRows.forEach((row, i) => {
+    const note = errors[i] ? { text: errors[i], colour: 'var(--red)' }
+      : problemFor[i] ? { text: problemFor[i].message, colour: 'var(--accent-gold)' }
+      : null;
+    const div = document.createElement('div');
+    div.style.cssText = 'padding:6px 10px; border-bottom:1px solid var(--border);';
+    div.innerHTML =
+      `<div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">` +
+      `<input type="checkbox" data-idx="${i}" data-col="enabled"${row.enabled === false ? '' : ' checked'} title="Apply this rule"/>` +
+      excInput(row, i, 'community', '190px', 'community (blank = all)') +
+      excInput(row, i, 'check', '120px', 'check') +
+      excInput(row, i, 'account', '70px', 'account') +
+      excInput(row, i, 'action', '90px', 'action') +
+      excInput(row, i, 'value', '70px', 'value') +
+      excInput(row, i, 'expires', '100px', 'expires') +
+      `<button class="file-remove" data-remove="${i}" title="Delete this rule">✕</button>` +
+      `</div>` +
+      `<div style="display:flex; align-items:center; gap:6px; margin-top:4px;">` +
+      excInput(row, i, 'reason', '100%', 'reason — shown in the report in place of the finding') +
+      `</div>` +
+      (note ? `<div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:${note.colour}; margin-top:3px;">${esc(note.text)}</div>` : '');
+    excList.appendChild(div);
+  });
+  updateExceptionStatus();
+}
+
+function updateExceptionStatus() {
+  const { rules, errors } = readExceptionRules();
+  const off = exceptionRows.filter(r => r.enabled === false).length;
+  const parts = [`${rules.length} rule${rules.length === 1 ? '' : 's'} active`];
+  if (off) parts.push(`${off} turned off`);
+  if (errors.length) parts.push(`${errors.length} cannot be read`);
+  if (lastReview) {
+    parts.push(`${lastReview.applied.length} applied in this run`);
+    const idle = lastReview.problems.length;
+    if (idle) parts.push(`${idle} matched nothing`);
+  }
+  excStatus.textContent = parts.join(' · ');
+  excStatus.style.color = errors.length ? 'var(--red)' : 'var(--text-muted)';
+}
+
+excList.addEventListener('input', e => {
+  const el = e.target.closest('input[data-col]');
+  if (!el || el.type === 'checkbox') return;
+  exceptionRows[+el.dataset.idx][el.dataset.col] = el.value;
+  saveExceptionRows();
+  updateExceptionStatus();
+});
+excList.addEventListener('change', e => {
+  const el = e.target.closest('input[data-col="enabled"]');
+  if (!el) return;
+  exceptionRows[+el.dataset.idx].enabled = el.checked;
+  saveExceptionRows();
+  reapplyExceptions();
+});
+excList.addEventListener('click', e => {
+  const btn = e.target.closest('button[data-remove]');
+  if (!btn) return;
+  exceptionRows.splice(+btn.dataset.remove, 1);
+  saveExceptionRows();
+  renderExceptionList();
+  reapplyExceptions();
+});
+
+document.getElementById('excAdd').addEventListener('click', () => {
+  exceptionRows.push({ community: '', check: '', account: '', action: 'suppress', value: '', reason: '', expires: '', enabled: true });
+  saveExceptionRows();
+  renderExceptionList();
+});
+
+document.getElementById('excClear').addEventListener('click', () => {
+  if (!exceptionRows.length) return;
+  if (!confirm(`Delete all ${exceptionRows.length} exception rules from this browser? Export them first if you have not.`)) return;
+  exceptionRows = [];
+  saveExceptionRows();
+  renderExceptionList();
+  reapplyExceptions();
+});
+
+// ---- the spreadsheet ---------------------------------------------------------
+
+document.getElementById('excImport').addEventListener('change', async e => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const rows = /\.csv$/i.test(file.name)
+      ? parseExceptionCSV(await file.text())
+      : await parseExceptionWorkbook(await file.arrayBuffer());
+    if (!rows.length) { showError('No rules found in that file — the first row should be the column headings.'); return; }
+    exceptionRows = rows;
+    saveExceptionRows();
+    renderExceptionList();
+    reapplyExceptions();
+    const { errors } = readExceptionRules();
+    excStatus.textContent = `Loaded ${rows.length} rule${rows.length === 1 ? '' : 's'} from ${file.name}`
+      + (errors.length ? ` — ${errors.length} could not be read, see below` : '');
+  } catch (err) {
+    showError('Could not read that file: ' + err.message);
+  }
+});
+
+async function parseExceptionWorkbook(buffer) {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer);
+  const ws = wb.worksheets[0];
+  if (!ws) return [];
+  const rows = [];
+  let map = null;
+  ws.eachRow(row => {
+    const cells = [];
+    row.eachCell({ includeEmpty: true }, c => cells.push(cellText(c.value)));
+    if (!map) {
+      const candidate = headerMap(cells);
+      if (candidate.reason != null || candidate.community != null || candidate.check != null) { map = candidate; return; }
+      return;
+    }
+    const out = { enabled: true };
+    for (const col of EXCEPTION_COLUMNS) out[col] = map[col] == null ? '' : cellText(cells[map[col]]);
+    if (EXCEPTION_COLUMNS.some(c => out[c])) rows.push(out);
+  });
+  return rows;
+}
+
+document.getElementById('excExport').addEventListener('click', async () => {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Exceptions');
+  ws.columns = [
+    { header: 'Community', key: 'community', width: 46 },
+    { header: 'Check', key: 'check', width: 18 },
+    { header: 'Account', key: 'account', width: 10 },
+    { header: 'Action', key: 'action', width: 12 },
+    { header: 'Value', key: 'value', width: 10 },
+    { header: 'Reason', key: 'reason', width: 60 },
+    { header: 'Expires', key: 'expires', width: 12 }
+  ];
+  ws.getRow(1).font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+  ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
+  ws.getRow(1).height = 18;
+  exceptionRows.forEach(r => ws.addRow({
+    community: r.community || '', check: r.check || '', account: r.account || '',
+    action: r.action || '', value: r.value || '', reason: r.reason || '', expires: r.expires || ''
+  }));
+  ws.autoFilter = { from: 'A1', to: 'G1' };
+  ws.views = [{ state: 'frozen', ySplit: 1 }];
+
+  const buf = await wb.xlsx.writeBuffer();
+  const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `HOA Review Exceptions ${new Date().toISOString().slice(0, 10)}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+// ---- applying them to a finished run ------------------------------------------
+// The run itself is never re-analysed. Editing a rule and re-applying costs
+// nothing and takes a moment, which is the point of doing this afterwards.
+
+// An exception expires against the period under review, not against the day the
+// report is generated: re-running February in April must not quietly drop a rule
+// that lapsed in March.
+function reviewPeriodEnd() {
+  const m = (document.getElementById('reportMonth') || {}).value;
+  if (!/^\d{4}-\d{2}$/.test(m || '')) return undefined;
+  const [y, mm] = m.split('-').map(Number);
+  return new Date(Date.UTC(y, mm, 0)).toISOString().slice(0, 10); // last day of that month
+}
+
+function reviewedResults() {
+  if (!globalResults.length) { lastReview = null; return []; }
+  const { rules } = readExceptionRules();
+  if (!rules.length) { lastReview = { records: globalResults, applied: [], problems: [] }; return globalResults; }
+  lastReview = applyExceptions(globalResults, rules, reviewPeriodEnd());
+  return lastReview.records;
+}
+
+function reapplyExceptions() {
+  if (!globalResults.length) return;
+  renderResults(reviewedResults(), globalMonth);
+  if (excPanel.style.display !== 'none') renderExceptionList();
+}
+
 
 // ===== FINDINGS ENGINE =====
 // The model extracts raw figures only; every threshold, comparison and piece of
@@ -1468,6 +1727,66 @@ function applyExceptions(records, rules, asOf) {
   return { records: out, applied, problems };
 }
 
+
+// ---- reading a rule spreadsheet ----------------------------------------------
+// The spreadsheet in the shared drive is the copy people edit, so its headings
+// are whatever someone typed. Map them, and read a date the same way whether it
+// arrived as an Excel date or as text.
+const EXCEPTION_COLUMNS = ['community', 'check', 'account', 'action', 'value', 'reason', 'expires'];
+// The header a person is likely to have typed.
+const EXCEPTION_HEADER_ALIASES = {
+  community: 'community', association: 'community', hoa: 'community',
+  check: 'check', finding: 'check', item: 'check', type: 'check',
+  account: 'account', gl: 'account', glaccount: 'account', accountnumber: 'account',
+  action: 'action',
+  value: 'value', threshold: 'value', severity: 'value',
+  reason: 'reason', note: 'reason', notes: 'reason', why: 'reason',
+  expires: 'expires', expiry: 'expires', expiration: 'expires', review: 'expires', reviewdate: 'expires'
+};
+
+function headerMap(cells) {
+  const map = {};
+  cells.forEach((cell, i) => {
+    const key = String(cell == null ? '' : cell).toLowerCase().replace(/[^a-z]/g, '');
+    if (EXCEPTION_HEADER_ALIASES[key]) map[EXCEPTION_HEADER_ALIASES[key]] = i;
+  });
+  return map;
+}
+
+// A date arrives from Excel as a Date, from CSV as text; both end up as
+// YYYY-MM-DD so the rule reads the same either way.
+const cellText = v => v instanceof Date ? v.toISOString().slice(0, 10)
+  : v && typeof v === 'object' && v.text ? String(v.text)
+  : v == null ? '' : String(v).trim();
+
+function parseExceptionCSV(text) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (!lines.length) return [];
+  const split = line => {
+    const out = []; let cur = '', quoted = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (quoted) {
+        if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+        else if (ch === '"') quoted = false;
+        else cur += ch;
+      } else if (ch === '"') quoted = true;
+      else if (ch === ',') { out.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    out.push(cur);
+    return out.map(s => s.trim());
+  };
+  const map = headerMap(split(lines[0]));
+  if (map.reason == null && map.community == null && map.check == null) return [];
+  return lines.slice(1).map(line => {
+    const cells = split(line);
+    const out = { enabled: true };
+    for (const col of EXCEPTION_COLUMNS) out[col] = map[col] == null ? '' : (cells[map[col]] || '');
+    return out;
+  }).filter(r => EXCEPTION_COLUMNS.some(c => r[c]));
+}
+
 // ===== EXTRACTION =====
 
 // Static across every call, so it lives in `system` where it forms a cacheable
@@ -1895,7 +2214,7 @@ document.getElementById('runBtn').addEventListener('click', async () => {
   const results = files.map(f => f.result).filter(Boolean);
   globalResults = results;
   globalMonth = monthDisplay;
-  renderResults(results, monthDisplay);
+  renderResults(reviewedResults(), monthDisplay);
   runBtn.disabled = false;
 });
 
@@ -1935,6 +2254,8 @@ function renderResults(data, monthDisplay) {
     <div class="stat-pill"><div class="stat-dot yellow"></div>${warn} Warnings</div>
     <div class="stat-pill"><div class="stat-dot green"></div>${ok} Fully Clear</div>
     <div class="stat-pill">${data.length} Communities</div>
+    ${lastReview && lastReview.applied.length ? `<div class="stat-pill"><div class="stat-dot" style="background:var(--accent-gold)"></div>${lastReview.applied.length} Exception${lastReview.applied.length === 1 ? '' : 's'} Applied</div>` : ''}
+    ${lastReview && lastReview.problems.length ? `<div class="stat-pill" title="Rules that expired, matched nothing, or named a community not in this run">${lastReview.problems.length} Rule${lastReview.problems.length === 1 ? '' : 's'} Idle</div>` : ''}
   `;
   document.getElementById('results').classList.add('visible');
   document.getElementById('results').scrollIntoView({behavior:'smooth',block:'start'});
@@ -1994,6 +2315,9 @@ function getManagerItems(items) {
 // Excel Export — shared builder
 async function buildExcelWorkbook(reportType) {
   if (!globalResults.length) return;
+  // The workbook reports the run as the exceptions leave it, and carries its own
+  // record of what they removed - see the Exceptions Applied sheet below.
+  const reviewed = reviewedResults();
   const reviewer = document.getElementById('reviewerName').value.trim();
   const month    = document.getElementById('reportMonth').value || 'report';
   const workbook = new ExcelJS.Workbook();
@@ -2068,10 +2392,17 @@ async function buildExcelWorkbook(reportType) {
     const rh = ws.addRow(['Community', 'BS Operating', 'BS Reserve', 'Pre-Paid Reconciliation', 'Ledger Adjustments — Negative Non-PrePaid Balances', 'Section A — Special Income Items', 'Status']);
     rh.height = 18; rh.eachCell(cell => hdrCell(cell));
 
-    globalResults.forEach(a => {
+    reviewed.forEach(a => {
       const bsOpOK = isOK(a.bsOperating), bsResOK = isOK(a.bsReserve), ppOK = isOK(a.prepaid);
       const secA   = getSectionAItems(a.incomeStatement);
-      const secAOK = isOK(secA);
+      // The Operating cell is coloured as a warning only when a plain Low Cash
+      // flag is the whole of what is in it - the same distinction the status
+      // grade makes, taken from the findings rather than from the sentence.
+      const bsOpLC = (a.findings || []).some(f => f.check === 'lowCash' && f.severity === 'warning')
+                  && !(a.findings || []).some(f => f.column === 'bsOperating' && f.severity === 'critical');
+      // Still needed for the cell itself: the ledger column prints "OK", "Not
+      // provided", or the rows, independently of how the row is graded.
+      const ledgerOK = isOK(a.ledgerAdjustments) || isNotProvided(a.ledgerAdjustments);
       // This sheet lists Section A only, so it grades on Section A only. Ledger
       // adjustments raise a warning and never a critical, however many rows.
       const status = communityStatus(a, 'accounting');
@@ -2186,15 +2517,76 @@ async function buildExcelWorkbook(reportType) {
       });
     }
 
-    fillManagerSheet(ws, 'PMI Northeast Atlanta — Manager Review', globalResults);
+    fillManagerSheet(ws, 'PMI Northeast Atlanta — Manager Review', reviewed);
 
     // Then one tab per manager, so each only has to open their own.
-    const groups = groupResultsByManager(globalResults);
+    const groups = groupResultsByManager(reviewed);
     const tabNames = buildTabNames(groups.map(([manager]) => manager));
     groups.forEach(([manager, rows]) => {
       const sheet = workbook.addWorksheet(tabNames[manager]);
       fillManagerSheet(sheet, `${manager} — Manager Review`, rows);
     });
+  }
+
+
+  // ── EXCEPTIONS APPLIED sheet ─────────────────────────────────────────────
+  // On both reports, and on one sheet: an exception is a decision about the
+  // review, not about a manager, and a reader has to be able to see what the
+  // report is not showing them. Nothing is ever silently removed.
+  if (lastReview && (lastReview.applied.length || lastReview.problems.length)) {
+    const ws3 = workbook.addWorksheet('Exceptions Applied');
+    ws3.columns = [{ width: 38 }, { width: 20 }, { width: 17 }, { width: 10 }, { width: 62 }, { width: 18 }, { width: 46 }, { width: 12 }];
+    addTitleRows(ws3, 'PMI Northeast Atlanta — Exceptions Applied', 8);
+
+    if (lastReview.applied.length) {
+      const eh = ws3.addRow(['Community', 'Manager', 'Check', 'Account', 'Item', 'What was done', 'Reason', 'Rule expires']);
+      eh.height = 18; eh.eachCell(cell => hdrCell(cell));
+
+      lastReview.applied.forEach(a => {
+        const r = ws3.addRow([
+          a.community || 'Unknown',
+          managerForCommunity(a.community),
+          a.finding.check,
+          a.finding.account || '',
+          a.finding.text.replace(/\*\*/g, ''),
+          a.outcome,
+          a.rule.reason,
+          a.rule.expires
+        ]);
+        r.eachCell(cell => { cell.font = { name: 'Arial', size: 10 }; cell.alignment = { vertical: 'top', wrapText: true }; });
+        r.getCell(1).font = { name: 'Arial', size: 10, bold: true };
+        // Suppressed items are struck through: they were found, and then set aside.
+        if (a.action !== 'downgrade') r.getCell(5).font = { name: 'Arial', size: 10, strike: true, color: { argb: DGRAY } };
+      });
+      ws3.addRow([]);
+    }
+
+    // Rules that did nothing are worth seeing every month - that is how an
+    // exception written for a community that has since been renamed, or one that
+    // quietly expired, gets noticed instead of being trusted.
+    if (lastReview.problems.length) {
+      const ph = ws3.addRow(['Rules that did not apply', '', '', '', '', '', '', '']);
+      ws3.mergeCells(ph.number, 1, ph.number, 8); ph.height = 18;
+      Object.assign(ph.getCell(1), {
+        font: { name: 'Arial', size: 11, bold: true, color: { argb: WHITE } },
+        fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: DGRAY } },
+        alignment: { horizontal: 'left', vertical: 'middle' }
+      });
+      const qh = ws3.addRow(['Community', 'Check', 'Account', 'Action', 'Why it did not apply', '', 'Reason on the rule', 'Rule expires']);
+      qh.height = 18; qh.eachCell(cell => hdrCell(cell));
+      lastReview.problems.forEach(p => {
+        const r = ws3.addRow([
+          p.rule.community || '(every community)',
+          p.rule.check || '(any)', p.rule.account || '(any)', p.rule.action,
+          p.message, '', p.rule.reason, p.rule.expires
+        ]);
+        r.eachCell(cell => { cell.font = { name: 'Arial', size: 10 }; cell.alignment = { vertical: 'top', wrapText: true } });
+        const sc = statusColors(p.kind === 'expired' ? 'CRITICAL' : 'WARNING');
+        r.getCell(5).font = { name: 'Arial', size: 10, color: { argb: sc.font } };
+        r.getCell(5).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: sc.fill } };
+      });
+    }
+    ws3.views = [{ state: 'frozen', ySplit: 4 }];
   }
 
   // ── Download ─────────────────────────────────────────────────────────────

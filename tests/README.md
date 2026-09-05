@@ -17,8 +17,14 @@ Run it after any change to thresholds, formats, or section rules.
 ## `node tests/exceptions.test.js`
 
 Unit tests for the exception rules — parsing a rule, resolving the community it
-names, and applying suppress / downgrade / threshold to a finished run. All data
+names, applying suppress / downgrade / threshold to a finished run, and reading
+the rule spreadsheet (flexible headings, quoted commas, Excel dates). All data
 is synthetic.
+
+Exceptions are applied to a finished run, never during it, so a rule can be
+changed and re-applied to a saved session without re-analysing anything. That is
+why the engine takes records rather than PDFs, and why these tests need no
+fixtures.
 
 Community names are matched by **prefix, never by substring**, and an ambiguous
 prefix is refused rather than guessed. That is not a theoretical concern: the

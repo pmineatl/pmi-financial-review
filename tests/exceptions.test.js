@@ -21,10 +21,11 @@ const api = new Function('localStorage', 'document', [
   cut('// ===== MANAGER ASSIGNMENTS =====', '// ===== MANAGER ASSIGNMENTS UI ====='),
   cut('// ===== FINDINGS ENGINE =====', '// ===== EXCEPTIONS ====='),
   cut('// ===== EXCEPTIONS =====', '// ===== EXTRACTION ====='),
-  'return { buildFindings, parseExceptionRule, applyExceptions, resolveRuleCommunity, renderFindingCell };'
+  'return { buildFindings, parseExceptionRule, applyExceptions, resolveRuleCommunity, renderFindingCell, parseExceptionCSV, headerMap, cellText };'
 ].join('\n'))({ getItem: () => null, setItem: () => {} }, { getElementById: () => ({ checked: false }) });
 
-const { buildFindings, parseExceptionRule, applyExceptions, resolveRuleCommunity } = api;
+const { buildFindings, parseExceptionRule, applyExceptions, resolveRuleCommunity,
+        parseExceptionCSV, headerMap, cellText } = api;
 
 let pass = 0, fail = 0;
 function t(name, got, want) {
@@ -232,6 +233,52 @@ section('Rules that should not be trusted silently');
   t('one global rule covers every community it matches', res.applied.length, 2);
   t('and each hit is listed separately',
     res.applied.map(a => a.community.slice(0, 9)), ['Southaven', 'Country C']);
+}
+
+// --------------------------------------------------------------- spreadsheet
+// The rules live in a spreadsheet that people edit, so the headings are
+// whatever someone typed and the reader has to be forgiving about them.
+section('Reading the rule spreadsheet');
+{
+  const csv = [
+    'Association,Finding,GL Account,Action,Threshold,Why,Review Date',
+    'Marlowe Woods,Section A,30450,suppress,,"Leasing income is contractual, per the management agreement",2027-06-30',
+    'Ashgrove Commons,expenseVariance,40700,threshold,25%,Insurance is billed annually,2027-06-30'
+  ].join('\n');
+  const rows = parseExceptionCSV(csv);
+  t('alternative headings are understood', rows.length, 2);
+  t('columns land in the right fields',
+    [rows[0].community, rows[0].check, rows[0].account, rows[0].action, rows[0].expires],
+    ['Marlowe Woods', 'Section A', '30450', 'suppress', '2027-06-30']);
+  t('a quoted comma inside a reason survives',
+    rows[0].reason, 'Leasing income is contractual, per the management agreement');
+  t('a threshold value is carried through', rows[1].value, '25%');
+  t('rows arrive enabled', rows.every(r => r.enabled === true), true);
+  t('and every row parses into a rule',
+    rows.map((r, i) => !!parseExceptionRule(r, i).rule), [true, true]);
+}
+{
+  t('a file with no recognisable headings is refused',
+    parseExceptionCSV('one,two,three\na,b,c'), []);
+  t('an empty file is refused', parseExceptionCSV(''), []);
+  t('a header row on its own yields no rules',
+    parseExceptionCSV('community,check,account,action,value,reason,expires'), []);
+}
+{
+  // Excel hands back a Date object where a CSV hands back text; a rule has to
+  // read the same either way.
+  t('an Excel date becomes a plain date', cellText(new Date(Date.UTC(2027, 5, 30))), '2027-06-30');
+  t('rich text is flattened', cellText({ text: 'Section A' }), 'Section A');
+  t('a blank cell is empty, not "null"', cellText(null), '');
+  t('surrounding space is trimmed', cellText('  30700  '), '30700');
+}
+{
+  const map = headerMap(['Community', 'Check', 'GL', 'Action', 'Value', 'Notes', 'Expiry']);
+  t('headings map to fields regardless of wording',
+    [map.community, map.check, map.account, map.action, map.value, map.reason, map.expires],
+    [0, 1, 2, 3, 4, 5, 6]);
+  t('an unknown heading is ignored rather than guessed',
+    headerMap(['Community', 'Something Else']).account, undefined);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
