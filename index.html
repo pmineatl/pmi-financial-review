@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v47</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v48</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -187,6 +187,9 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
         <button class="run-btn" id="mgrRefresh" style="padding:7px 16px; font-size:12px;">Refresh from CINC</button>
         <input type="text" id="mgrFilter" placeholder="Filter communities…" autocomplete="off"
                style="flex:1; min-width:180px; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text); font-family:'IBM Plex Mono',monospace; font-size:11px; padding:6px 9px; outline:none;"/>
+        <label style="display:flex; align-items:center; gap:5px; font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-muted); white-space:nowrap;">
+          <input type="checkbox" id="mgrShowInactive"/> Show inactive
+        </label>
         <button class="resume-banner-btn resume-clear-btn" id="mgrClearOverrides" style="padding:5px 10px;">Clear overrides</button>
         <span class="progress-label" id="mgrStatus" style="margin:0;"></span>
       </div>
@@ -470,6 +473,11 @@ document.getElementById('cincFetchListBtn').addEventListener('click', async () =
   cincPullStatus.textContent = 'Fetching document list from CINC…';
 
   try {
+    // The roster drives the inactive marking below. Load it on the first pull in
+    // a fresh browser; a failure here must not block the pull itself.
+    if (!Object.keys(managerMap).length) {
+      try { await fetchManagerAssignments(); } catch (_) {}
+    }
     const list = await fetchCincDocumentList(startDate, endDate);
     if (!list.length) {
       cincPullStatus.textContent = 'No documents found in that date range.';
@@ -528,13 +536,23 @@ document.getElementById('cincFetchListBtn').addEventListener('click', async () =
 });
 
 function renderCincPreview(startDate, endDate) {
-  cincPreviewInfo.textContent = `Found ${cincFetchedItems.length} financial PDF${cincFetchedItems.length === 1 ? '' : 's'} for ${startDate} – ${endDate}. Uncheck any that don't belong before importing.`;
+  // A community CINC has marked inactive is no longer managed, so it is
+  // unchecked by default rather than dropped: it stays visible and one click
+  // brings it back if the batch included it deliberately.
+  const inactiveCount = cincFetchedItems.filter(it => isInactiveCommunity(it.associationName)).length;
+  cincPreviewInfo.textContent =
+    `Found ${cincFetchedItems.length} financial PDF${cincFetchedItems.length === 1 ? '' : 's'} for ${startDate} – ${endDate}.`
+    + (inactiveCount ? ` ${inactiveCount} inactive in CINC and left unchecked.` : '')
+    + ` Uncheck any that don't belong before importing.`;
   cincPreviewList.innerHTML = '';
   cincFetchedItems.forEach((item, i) => {
     const sizeKB = Math.round(item.base64.length * 0.75 / 1024);
+    const inactive = isInactiveCommunity(item.associationName);
     const row = document.createElement('label');
     row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:4px 0; font-family:\'IBM Plex Mono\',monospace; font-size:11px; color:#6b4f00;';
-    row.innerHTML = `<input type="checkbox" checked data-idx="${i}"/> <span>${esc(item.displayName)} <span style="color:var(--text-dim)">— ${sizeKB} KB</span></span>`;
+    row.innerHTML = `<input type="checkbox"${inactive ? '' : ' checked'} data-idx="${i}"/> <span>${esc(item.displayName)}`
+      + (inactive ? ` <span style="color:var(--red)">— inactive</span>` : '')
+      + ` <span style="color:var(--text-dim)">— ${sizeKB} KB</span></span>`;
     cincPreviewList.appendChild(row);
   });
   cincPreviewFilter.value = '';
@@ -636,6 +654,14 @@ async function fetchManagerAssignments() {
   return managerMap;
 }
 
+// True only when CINC positively says the association is inactive. A community
+// the roster has never heard of is unknown, not inactive, and must not be
+// filtered out on the strength of a missing record.
+function isInactiveCommunity(name) {
+  const hit = managerMap[normCommunity(name)];
+  return !!hit && hit.active === false;
+}
+
 // Resolution order: local override, then CINC, then Unassigned.
 function managerForCommunity(name) {
   const key = normCommunity(name);
@@ -715,10 +741,16 @@ document.getElementById('mgrToggle').addEventListener('click', () => {
 function managerRosterRows() {
   // The roster is whatever CINC gave us, plus any community that only exists as
   // an override (a manually uploaded package CINC has never heard of).
-  const rows = Object.entries(managerMap).map(([key, e]) => ({
-    key, display: e.display, active: e.active,
-    cinc: e.manager || '', effective: managerForCommunity(e.display)
-  }));
+  // Inactive associations are hidden unless asked for - they are a third of the
+  // list and are no longer managed - but an inactive row carrying an override
+  // always shows, so an assignment can never be edited out of sight.
+  const showInactive = document.getElementById('mgrShowInactive').checked;
+  const rows = Object.entries(managerMap)
+    .filter(([key, e]) => showInactive || e.active !== false || managerOverrides[key])
+    .map(([key, e]) => ({
+      key, display: e.display, active: e.active,
+      cinc: e.manager || '', effective: managerForCommunity(e.display)
+    }));
   for (const key of Object.keys(managerOverrides)) {
     if (!managerMap[key]) rows.push({ key, display: key, active: true, cinc: '', effective: managerOverrides[key] });
   }
@@ -758,8 +790,12 @@ function updateManagerStatus() {
   const rows = managerRosterRows();
   const assigned = rows.filter(r => r.effective !== UNASSIGNED).length;
   const overrides = Object.keys(managerOverrides).length;
+  const hidden = Object.values(managerMap).filter(e => e.active === false).length
+    - rows.filter(r => r.active === false).length;
   mgrStatus.textContent = rows.length
-    ? `${rows.length} communities · ${assigned} assigned · ${rows.length - assigned} unassigned${overrides ? ` · ${overrides} override${overrides > 1 ? 's' : ''}` : ''}`
+    ? `${rows.length} communities · ${assigned} assigned · ${rows.length - assigned} unassigned`
+      + (overrides ? ` · ${overrides} override${overrides > 1 ? 's' : ''}` : '')
+      + (hidden > 0 ? ` · ${hidden} inactive hidden` : '')
     : '';
 }
 
@@ -770,6 +806,7 @@ function applyManagerFilter() {
   });
 }
 mgrFilter.addEventListener('input', applyManagerFilter);
+document.getElementById('mgrShowInactive').addEventListener('change', renderManagerList);
 
 // An edit that matches CINC is not an override - drop it so the row goes back to
 // tracking CINC automatically if the assignment changes there later.

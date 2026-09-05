@@ -18,14 +18,14 @@ const block = src.slice(src.indexOf('// ===== MANAGER ASSIGNMENTS ====='), src.i
 // so the block returns an interface rather than being reached into from outside.
 const {
   normCommunity, managerTabName, buildTabNames,
-  managerForCommunity, groupResultsByManager, setState
-} = new Function('localStorage', block + `
+  managerForCommunity, groupResultsByManager, isInactiveCommunity, setState
+} = new Function('localStorage', 'document', block + `
   return {
     normCommunity, managerTabName, buildTabNames,
-    managerForCommunity, groupResultsByManager,
+    managerForCommunity, groupResultsByManager, isInactiveCommunity,
     setState(map, overrides) { managerMap = map; managerOverrides = overrides; }
   };
-`)({ getItem: () => null, setItem: () => {} });
+`)({ getItem: () => null, setItem: () => {} }, { getElementById: () => ({ checked: false }) });
 
 let pass = 0, fail = 0;
 function t(name, got, want) {
@@ -97,6 +97,21 @@ section('Assignment resolution');
   setState(map, { [normCommunity('Alpha HOA')]: 'Elena Fitzgerald' });
   t('override beats CINC', managerForCommunity('Alpha HOA'), 'Elena Fitzgerald');
   setState(map, {});
+}
+
+// ------------------------------------------------------------ active status
+section('Inactive communities');
+{
+  setState({
+    [normCommunity('Active HOA')]: { manager: 'Alice Abernathy', display: 'Active HOA', active: true },
+    [normCommunity('Retired HOA')]: { manager: 'Bruno Castellanos', display: 'Retired HOA', active: false }
+  }, {});
+  t('active community is not inactive', isInactiveCommunity('Active HOA'), false);
+  t('inactive community is flagged', isInactiveCommunity('Retired HOA'), true);
+  // A community the roster has never heard of is unknown, not inactive - it must
+  // not be filtered out on the strength of a missing record.
+  t('unknown community is not treated as inactive', isInactiveCommunity('Never Heard Of HOA'), false);
+  t('inactive community still resolves to its manager', managerForCommunity('Retired HOA'), 'Bruno Castellanos');
 }
 
 // ---------------------------------------------------------------- grouping
