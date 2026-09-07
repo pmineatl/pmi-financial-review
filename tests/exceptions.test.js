@@ -281,5 +281,104 @@ section('Reading the rule spreadsheet');
     headerMap(['Community', 'Something Else']).account, undefined);
 }
 
+// ------------------------------------------------------------------- amounts
+// A rule can name the exact figure it is about. This is what lets a legacy
+// balance carried in from a previous management company be ignored without also
+// going quiet on a real charge that lands on the same account later.
+section('Naming an exact amount');
+const legacy = ytdNsf => buildFindings({
+  communityName: 'Bakerswood Community Association, Inc.',
+  balanceSheet: { operating: { totalAssets: 10, totalLiabilitiesAndEquity: 10 }, reserve: { totalAssets: 5, totalLiabilitiesAndEquity: 5 } },
+  prepaid: { balanceSheetAmount: 1, homeownerListTotal: 1 }, agingReportPresent: true, agingNegatives: [],
+  specialIncome: [
+    { accountNumber: '30800-00', accountName: 'Management Collection Fee', currentPeriodActual: 0, ytdActual: 123 },
+    { accountNumber: '30850-00', accountName: 'NSF Charges', currentPeriodActual: 0, ytdActual: ytdNsf }
+  ]
+});
+const amountRules = rows => rows.map((r, i) => {
+  const out = parseExceptionRule(Object.assign({ action: 'suppress', reason: 'Legacy balance from the prior management company', expires: '2026-12-31' }, r), i);
+  if (out.error) throw new Error(out.error);
+  return out.rule;
+});
+
+t('a carried-forward Section A line reports its YTD as the amount',
+  legacy(35).findings.filter(f => f.check === 'sectionA').map(f => f.amount), [123, 35]);
+
+{
+  const rules = amountRules([
+    { community: 'Bakerswood', check: 'Section A', account: '30800', amount: '123.00' },
+    { community: 'Bakerswood', check: 'Section A', account: '30850', amount: '35.00' }
+  ]);
+  const res = applyExceptions([legacy(35)], rules, '2026-09-30');
+  t('the two legacy balances are set aside', res.records[0].incomeStatement, ['OK']);
+  t('and both are recorded', res.applied.length, 2);
+}
+{
+  // The whole point: the balance moving means something happened, so it is
+  // reported again even though the rule is still in force.
+  const rules = amountRules([{ community: 'Bakerswood', check: 'Section A', account: '30850', amount: '35.00' }]);
+  t('a cent higher is a different figure and is reported',
+    applyExceptions([legacy(35.01)], rules, '2026-09-30').records[0].incomeStatement.length, 2);
+  t('a cent lower is reported too',
+    applyExceptions([legacy(34.99)], rules, '2026-09-30').records[0].incomeStatement.length, 2);
+  t('a dollar higher is reported',
+    applyExceptions([legacy(36)], rules, '2026-09-30').records[0].incomeStatement.length, 2);
+  t('an exact match is still set aside',
+    applyExceptions([legacy(35)], rules, '2026-09-30').records[0].incomeStatement.length, 1);
+  t('and the rule reports itself idle when nothing matched',
+    applyExceptions([legacy(36)], rules, '2026-09-30').problems.map(p => p.kind), ['unused']);
+}
+{
+  // A real charge this period is a different finding shape entirely - it reports
+  // the current-period figure, not the YTD - so an amount rule cannot swallow it.
+  const withCharge = buildFindings({
+    communityName: 'Bakerswood Community Association, Inc.',
+    balanceSheet: { operating: { totalAssets: 10, totalLiabilitiesAndEquity: 10 }, reserve: { totalAssets: 5, totalLiabilitiesAndEquity: 5 } },
+    prepaid: { balanceSheetAmount: 1, homeownerListTotal: 1 }, agingReportPresent: true, agingNegatives: [],
+    specialIncome: [{ accountNumber: '30850-00', accountName: 'NSF Charges', currentPeriodActual: 75, ytdActual: 110 }]
+  });
+  const rules = amountRules([{ community: 'Bakerswood', check: 'Section A', account: '30850', amount: '35.00' }]);
+  const res = applyExceptions([withCharge], rules, '2026-10-31');
+  t('[regression] a real charge on the same account is never hidden by an amount rule',
+    res.records[0].incomeStatement, ['**NSF Charges: 30850-00 ($75.00)**']);
+}
+{
+  // Blank is the old behaviour, which is what every rule written before this
+  // column existed relies on.
+  const rules = amountRules([{ community: 'Bakerswood', check: 'Section A', account: '30850' }]);
+  t('a blank amount matches whatever is there',
+    [applyExceptions([legacy(35)], rules, '2026-09-30').records[0].incomeStatement.length,
+     applyExceptions([legacy(999)], rules, '2026-09-30').records[0].incomeStatement.length], [1, 1]);
+}
+
+section('Writing an amount');
+{
+  const amt = raw => {
+    const out = parseExceptionRule({ community: 'A', check: 'sectionA', amount: raw, action: 'suppress', reason: 'x', expires: '2026-12-31' }, 0);
+    return out.rule ? out.rule.amountCents : out.error;
+  };
+  t('a plain number', amt('123'), 12300);
+  t('with cents', amt('123.00'), 12300);
+  t('with a dollar sign', amt('$123.00'), 12300);
+  t('with a thousands separator', amt('$1,234.56'), 123456);
+  t('copied out of the report in accounting parentheses', amt('($123.00)'), 12300);
+  // The report prints most amounts without a leading sign, so the number a
+  // person reads off it is the size. Match on that.
+  t('a negative is matched on its size', amt('-123.00'), 12300);
+  t('blank means no amount was named', amt(''), null);
+  t('nonsense is refused rather than ignored', typeof amt('about a hundred'), 'string');
+}
+{
+  const neg = buildFindings({ communityName: 'X',
+    balanceSheet: { operating: { totalAssets: 1, totalLiabilitiesAndEquity: 1 }, reserve: { totalAssets: 1, totalLiabilitiesAndEquity: 1 } },
+    prepaid: { balanceSheetAmount: 1, homeownerListTotal: 1 },
+    expenseAccounts: [{ accountNumber: '60400', accountName: 'Landscaping', currentPeriodActual: -480, currentPeriodBudget: 0 }] });
+  t('a negative expense reports its size as the amount',
+    neg.findings.find(f => f.check === 'negativeExpense').amount, -480);
+  const rules = amountRules([{ community: 'X', check: 'negativeExpense', amount: '480.00' }]);
+  t('and is matched by the figure printed in the report',
+    applyExceptions([neg], rules, '2026-09-30').records[0].incomeStatement, ['OK']);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

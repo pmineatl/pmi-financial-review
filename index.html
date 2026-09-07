@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v52</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v53</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -986,6 +986,7 @@ function renderExceptionList() {
       excInput(row, i, 'community', '190px', 'community (blank = all)') +
       excInput(row, i, 'check', '120px', 'check') +
       excInput(row, i, 'account', '70px', 'account') +
+      excInput(row, i, 'amount', '90px', 'exact amount') +
       excInput(row, i, 'action', '90px', 'action') +
       excInput(row, i, 'value', '70px', 'value') +
       excInput(row, i, 'expires', '100px', 'expires') +
@@ -1105,6 +1106,7 @@ document.getElementById('excExport').addEventListener('click', async () => {
     { header: 'Community', key: 'community', width: 46 },
     { header: 'Check', key: 'check', width: 18 },
     { header: 'Account', key: 'account', width: 10 },
+    { header: 'Amount', key: 'amount', width: 12 },
     { header: 'Action', key: 'action', width: 12 },
     { header: 'Value', key: 'value', width: 10 },
     { header: 'Reason', key: 'reason', width: 60 },
@@ -1114,10 +1116,10 @@ document.getElementById('excExport').addEventListener('click', async () => {
   ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
   ws.getRow(1).height = 18;
   exceptionRows.forEach(r => ws.addRow({
-    community: r.community || '', check: r.check || '', account: r.account || '',
+    community: r.community || '', check: r.check || '', account: r.account || '', amount: r.amount || '',
     action: r.action || '', value: r.value || '', reason: r.reason || '', expires: r.expires || ''
   }));
-  ws.autoFilter = { from: 'A1', to: 'G1' };
+  ws.autoFilter = { from: 'A1', to: 'H1' };
   ws.views = [{ state: 'frozen', ySplit: 1 }];
 
   const buf = await wb.xlsx.writeBuffer();
@@ -1214,6 +1216,9 @@ function finding(f) {
     accountNumber: f.accountNumber == null ? null : String(f.accountNumber),
     accountName: f.accountName == null ? null : String(f.accountName),
     figures: f.figures || {},
+    // The figure the sentence is about, and the one an exception rule names.
+    // Which of the figures that is differs by check, so it is passed in.
+    amount: isNum(f.amount) ? f.amount : null,
     text: f.text
   };
   if (f.notProvided) rec.notProvided = true;
@@ -1238,6 +1243,7 @@ function balanceColumnFindings(col, column) {
   return [finding({
     check: column, column, severity: 'critical',
     figures: { totalAssets: col.totalAssets, totalLiabilitiesAndEquity: col.totalLiabilitiesAndEquity, difference: diff },
+    amount: diff,
     text: `Out of balance — Total Assets: ${money(col.totalAssets)}; `
         + `Total Liabilities & Equity: ${money(col.totalLiabilitiesAndEquity)}; `
         + `Difference: ${money(diff)}`
@@ -1257,6 +1263,7 @@ function lowCashFindings(x) {
     check: 'lowCash', column: 'bsOperating',
     severity: very ? 'critical' : 'warning',
     figures: { cash, annualBudget: budget, ratio },
+    amount: cash,
     text: `${very ? 'Very Low Cash' : 'Low Cash'} (${money(cash)} balance, ${money(budget)} annual budget)`
   })];
 }
@@ -1276,6 +1283,7 @@ function prepaidFindings(p) {
   return [finding({
     check: 'prepaid', column: 'prepaid', severity: 'critical',
     figures: { balanceSheetAmount: bsAmt, homeownerListTotal: listAmt, difference: diff },
+    amount: diff,
     text: `Mismatch — Balance Sheet: ${money(bsAmt)}; `
         + `PrePaid Homeowner List Total: ${money(listAmt)}; `
         + `Difference: ${money(diff)}`
@@ -1305,6 +1313,7 @@ function ledgerFindings(x) {
     // `account` stays reserved for the GL number a rule is written against.
     accountName: r.lineItem == null ? null : String(r.lineItem),
     figures: { balance: r.balance },
+    amount: r.balance,
     ref: { accountCode: r.accountCode || null, ownerName: r.ownerName || null },
     text: `${r.accountCode || '?'} ${r.ownerName || ''} — ${r.lineItem}: ${parenAmount(r.balance)}`.replace(/\s+—/, ' —')
   }));
@@ -1334,6 +1343,9 @@ function incomeStatementFindings(x) {
       if (isNum(s.ytdActual) && s.ytdActual !== 0) {
         out.push(finding(Object.assign({}, common, {
           figures: { currentPeriodActual: 0, ytdActual: s.ytdActual },
+          // Nothing happened this period, so the YTD carried in from earlier
+          // months is what the line reports - and what a rule would name.
+          amount: s.ytdActual,
           text: `**${label}: ${s.accountNumber} (YTD ${signedAmount(s.ytdActual).slice(1, -1)}, no current-period activity)**`
         })));
       }
@@ -1343,6 +1355,7 @@ function incomeStatementFindings(x) {
       figures: isNum(s.ytdActual)
         ? { currentPeriodActual: s.currentPeriodActual, ytdActual: s.ytdActual }
         : { currentPeriodActual: s.currentPeriodActual },
+      amount: s.currentPeriodActual,
       text: `**${label}: ${s.accountNumber} ${signedAmount(s.currentPeriodActual)}**`
     })));
   }
@@ -1359,6 +1372,7 @@ function incomeStatementFindings(x) {
       check: 'incomeVariance', column: 'incomeStatement', severity: 'warning',
       account: acctPrefix(a.accountNumber), accountNumber: a.accountNumber, accountName: a.accountName,
       figures: { actual: a.currentPeriodActual, budget: a.currentPeriodBudget, pct, difference: a.currentPeriodActual - a.currentPeriodBudget },
+      amount: a.currentPeriodActual,
       text: `Income variance: ${a.accountName} (${a.accountNumber}) — `
           + `Actual: ${money(a.currentPeriodActual)}, Budget: ${money(a.currentPeriodBudget)}, `
           + `Variance: ${pct.toFixed(1)}%`
@@ -1374,6 +1388,7 @@ function incomeStatementFindings(x) {
       check: 'negativeIncome', column: 'incomeStatement', severity: 'warning',
       account: acctPrefix(a.accountNumber), accountNumber: a.accountNumber, accountName: a.accountName,
       figures: { actual: a.currentPeriodActual },
+      amount: a.currentPeriodActual,
       text: `Negative income: ${a.accountName} (${a.accountNumber}) ${parenAmount(a.currentPeriodActual)}`
     }));
   }
@@ -1387,6 +1402,7 @@ function incomeStatementFindings(x) {
       check: 'negativeExpense', column: 'incomeStatement', severity: 'warning',
       account: acctPrefix(a.accountNumber), accountNumber: a.accountNumber, accountName: a.accountName,
       figures: { actual: a.currentPeriodActual },
+      amount: a.currentPeriodActual,
       text: `Negative expense: ${a.accountName} (${a.accountNumber}) ${parenAmount(a.currentPeriodActual)}`
     }));
   }
@@ -1403,6 +1419,7 @@ function incomeStatementFindings(x) {
       check: 'expenseVariance', column: 'incomeStatement', severity: 'warning',
       account: acctPrefix(a.accountNumber), accountNumber: a.accountNumber, accountName: a.accountName,
       figures: { actual: a.currentPeriodActual, budget: a.currentPeriodBudget, pct, difference: a.currentPeriodActual - a.currentPeriodBudget },
+      amount: a.currentPeriodActual,
       text: `Expense variance: ${a.accountName} (${a.accountNumber}) — `
           + `Actual: ${money(a.currentPeriodActual)}, Budget: ${money(a.currentPeriodBudget)}, `
           + `Variance: ${pct.toFixed(1)}%`
@@ -1538,6 +1555,25 @@ function parseThresholdValue(raw) {
   return { unit: dollars ? 'dollars' : 'percent', amount: num };
 }
 
+// An amount is typed the way the report prints it: 123, 123.00, $123.00, or
+// ($123.00) straight out of the Section A column. Compared to the cent, and on
+// magnitude - the report shows most amounts in accounting parentheses without a
+// leading sign, so the number a person reads off it is the size, not the sign.
+function parseRuleAmount(raw) {
+  const s = normRuleText(raw).replace(/[,$\s]/g, '').replace(/^\((.*)\)$/, '$1');
+  if (!s) return { empty: true };
+  if (!/^-?\d+(\.\d+)?$/.test(s)) return { error: `"${raw}" is not an amount - write it like 123.00` };
+  return { cents: Math.round(Math.abs(parseFloat(s)) * 100) };
+}
+
+// Two amounts are the same when they are the same to the cent. Anything else -
+// a dollar higher, a cent lower - is a different figure and gets reported.
+function amountMatches(rule, f) {
+  if (rule.amountCents == null) return true;   // no amount named: match on the rest
+  if (!isNum(f.amount)) return false;          // nothing to compare: do not suppress
+  return Math.round(Math.abs(f.amount) * 100) === rule.amountCents;
+}
+
 // Turn one spreadsheet row into a rule, or into the reason it cannot be one.
 // Errors are returned rather than thrown: the panel lists every bad row at once
 // instead of stopping at the first.
@@ -1570,9 +1606,13 @@ function parseExceptionRule(raw, index) {
   const expires = new Date(expiresRaw);
   if (isNaN(expires.getTime())) return { error: `${where}: "${expiresRaw}" is not a date I can read - use YYYY-MM-DD` };
 
+  const amount = parseRuleAmount(raw.amount);
+  if (amount.error) return { error: `${where}: ${amount.error}` };
+
   const rule = {
     index, community: isWildcard(community) ? null : community,
     check, account, action, reason,
+    amountCents: amount.empty ? null : amount.cents,
     expires: expires.toISOString().slice(0, 10)
   };
 
@@ -1617,6 +1657,7 @@ function resolveRuleCommunity(text, communityNames) {
 function ruleMatchesFinding(rule, f) {
   if (rule.check && rule.check !== f.check) return false;
   if (rule.account && rule.account !== f.account) return false;
+  if (!amountMatches(rule, f)) return false;
   return true;
 }
 
@@ -1732,12 +1773,13 @@ function applyExceptions(records, rules, asOf) {
 // The spreadsheet in the shared drive is the copy people edit, so its headings
 // are whatever someone typed. Map them, and read a date the same way whether it
 // arrived as an Excel date or as text.
-const EXCEPTION_COLUMNS = ['community', 'check', 'account', 'action', 'value', 'reason', 'expires'];
+const EXCEPTION_COLUMNS = ['community', 'check', 'account', 'amount', 'action', 'value', 'reason', 'expires'];
 // The header a person is likely to have typed.
 const EXCEPTION_HEADER_ALIASES = {
   community: 'community', association: 'community', hoa: 'community',
   check: 'check', finding: 'check', item: 'check', type: 'check',
   account: 'account', gl: 'account', glaccount: 'account', accountnumber: 'account',
+  amount: 'amount', exactamount: 'amount', ytd: 'amount', ytdamount: 'amount', figure: 'amount',
   action: 'action',
   value: 'value', threshold: 'value', severity: 'value',
   reason: 'reason', note: 'reason', notes: 'reason', why: 'reason',
@@ -2572,13 +2614,15 @@ async function buildExcelWorkbook(reportType) {
         fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: DGRAY } },
         alignment: { horizontal: 'left', vertical: 'middle' }
       });
-      const qh = ws3.addRow(['Community', 'Check', 'Account', 'Action', 'Why it did not apply', '', 'Reason on the rule', 'Rule expires']);
+      const qh = ws3.addRow(['Community', 'Check', 'Account', 'Action', 'Why it did not apply', 'Amount named', 'Reason on the rule', 'Rule expires']);
       qh.height = 18; qh.eachCell(cell => hdrCell(cell));
       lastReview.problems.forEach(p => {
         const r = ws3.addRow([
           p.rule.community || '(every community)',
           p.rule.check || '(any)', p.rule.account || '(any)', p.rule.action,
-          p.message, '', p.rule.reason, p.rule.expires
+          p.message,
+          p.rule.amountCents == null ? '(any)' : money(p.rule.amountCents / 100),
+          p.rule.reason, p.rule.expires
         ]);
         r.eachCell(cell => { cell.font = { name: 'Arial', size: 10 }; cell.alignment = { vertical: 'top', wrapText: true } });
         const sc = statusColors(p.kind === 'expired' ? 'CRITICAL' : 'WARNING');

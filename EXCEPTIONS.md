@@ -20,13 +20,14 @@ file back out.
 
 ---
 
-## The seven columns
+## The eight columns
 
 | Column | Required | What it means |
 |---|---|---|
 | **Community** | no | Which community. Leave blank to apply to every community. |
 | **Check** | no | Which kind of finding. Leave blank for any. |
 | **Account** | no | Which GL account. Leave blank for any. |
+| **Amount** | no | Only this exact figure. Leave blank for any amount. |
 | **Action** | yes | `suppress`, `downgrade`, or `threshold`. |
 | **Value** | only for `downgrade` / `threshold` | The threshold, or the severity to drop to. |
 | **Reason** | **yes** | Why. This is printed in the report. |
@@ -34,6 +35,36 @@ file back out.
 
 Headings are read loosely, so a file that says `Association`, `Finding`,
 `GL Account`, `Why` and `Review Date` works just as well.
+
+### Amount — pinning a rule to one figure
+
+Leave **Amount** blank and the rule applies whenever the community, check and
+account match, however large the number is. That is the right default for a
+recurring item: pool remote income is contractual whatever it comes to this
+month.
+
+Fill it in and the rule applies **only to that exact figure, to the cent**. A
+dollar more, a cent less, and the item is reported as normal. Use this for a
+known fixed balance rather than a recurring pattern — most often a balance that
+transferred in from a previous management company and will clear at year end.
+
+Write the amount however it appears in the report: `123`, `123.00`,
+`$123.00`, or `($123.00)` copied straight out of the Section A column.
+Amounts are matched on size, not sign, because the report prints most figures in
+accounting parentheses without a leading sign.
+
+The figure a rule is matched against is the one the report line is about:
+
+| Kind of finding | The amount is |
+|---|---|
+| Section A with no current-period activity | the YTD figure |
+| Section A with activity this period | the current-period actual |
+| Expense or income variance | the actual |
+| Negative expense or negative income | the actual |
+| Ledger adjustment | the homeowner's balance on that line |
+| Balance sheet out of balance | the difference |
+| Pre-paid mismatch | the difference |
+| Low cash | the cash balance |
 
 ### Reason and Expires are required, on purpose
 
@@ -165,6 +196,21 @@ stop being reported; a large one still is.
 |---|---|---|---|---|---|---|
 | | expenseVariance | 60400 | threshold | $2,500 | Landscaping is seasonal; only large swings are worth review | 2027-01-31 |
 
+**One known balance, and nothing else.** A community that transferred in
+mid-year carries balances from its previous manager. They sit in YTD with no
+current-period activity and will clear at year end, so they are ignored — but
+only at exactly those figures.
+
+| Community | Check | Account | Amount | Action | Reason | Expires |
+|---|---|---|---|---|---|---|
+| Bakerswood | Section A | 30800 | 123.00 | suppress | Legacy balance from the prior management company | 2026-12-31 |
+| Bakerswood | Section A | 30850 | 35.00 | suppress | Legacy balance from the prior management company | 2026-12-31 |
+
+If a real NSF charge lands on 30850 in October, it is a different figure, so it
+is reported — which is the reason to name the amount rather than suppress the
+account. When the balance itself changes, that is reported too: something moved
+on an account you had agreed to ignore, and you want to know.
+
 ---
 
 ## Checking that a rule worked
@@ -189,6 +235,9 @@ row it could not read at all.
 
 - **One rule, one reason.** Resist a rule so broad you cannot say in one sentence
   what it is for.
+- **Name the amount when the figure is fixed and known.** Suppressing a whole
+  account goes quiet on everything that lands there afterwards; naming the amount
+  ignores the one balance you meant and nothing else.
 - **Prefer `threshold` to `suppress`** on variance accounts. Suppressing an
   account means never hearing about it again, including the month it matters.
 - **Write the reason for someone else.** "Contract" is not a reason; "Pool
