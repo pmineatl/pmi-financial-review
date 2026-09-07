@@ -121,7 +121,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v53</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v54</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -264,6 +264,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
     <div class="action-bar">
       <button class="btn-sec btn-excel" id="accountingBtn">⬇ Accounting Report</button>
       <button class="btn-sec btn-excel" id="managerBtn">⬇ Manager Report</button>
+      <button class="btn-sec" id="extractionsBtn" title="Save what the model read from each statement, as a regression fixture">⬇ Extractions (tests)</button>
       <button class="btn-sec" id="printBtn">🖨 Print / Save PDF</button>
       <button class="btn-sec" id="resetBtn">↩ New Review</button>
     </div>
@@ -315,12 +316,26 @@ function saveSession(month, monthDisplay, reviewer, filesArr) {
       results[item.file.name + '|' + item.file.size] = item.result;
     }
   });
+  const session = {
+    timestamp: Date.now(), month, monthDisplay, reviewer,
+    total: filesArr.length, completed: Object.keys(results).length, results
+  };
   try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify({
-      timestamp: Date.now(), month, monthDisplay, reviewer,
-      total: filesArr.length, completed: Object.keys(results).length, results
-    }));
-  } catch(e) {}
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  } catch (e) {
+    // Out of room. The extractions roughly double the session, and resuming a
+    // run matters more than keeping them, so drop them and save what is left
+    // rather than losing the session entirely.
+    try {
+      const lean = {};
+      for (const [k, v] of Object.entries(results)) {
+        const copy = Object.assign({}, v);
+        delete copy.__extracted;
+        lean[k] = copy;
+      }
+      localStorage.setItem(SESSION_KEY, JSON.stringify(Object.assign({}, session, { results: lean, extractionsDropped: true })));
+    } catch (_) {}
+  }
 }
 
 function loadSession() {
@@ -2099,7 +2114,10 @@ async function analyzePDF(file, monthDisplay) {
   result.__pageCount = pageCount;
   result.__truncated = truncated;
   result.__usage = usage;
-  result.__extracted = parsed;   // kept for diagnostics; stripped before display
+  // What the model transcribed. Carried on the result for the run, saved with
+  // the session, and written out by the Extractions button as a test fixture.
+  // Never displayed - every reader picks named fields off this object.
+  result.__extracted = parsed;
   return result;
 }
 
@@ -2170,8 +2188,11 @@ document.getElementById('runBtn').addEventListener('click', async () => {
         fileLog.inputTokens = u.input_tokens || 0;
         fileLog.outputTokens = u.output_tokens || 0;
         fileLog.cacheReadTokens = u.cache_read_input_tokens || 0;
-        delete _res.__pageCount; delete _res.__truncated;
-        delete _res.__usage; delete _res.__extracted;
+        delete _res.__pageCount; delete _res.__truncated; delete _res.__usage;
+        // __extracted is kept. It is what the model transcribed, and the only
+        // thing from which a month can be rebuilt into a regression fixture -
+        // re-running the statements to get it back costs real money. It is
+        // stripped from the report and never displayed.
         item.result = _res;
         item.status = 'done';
         fileLog.outcome = 'success';
@@ -2648,6 +2669,31 @@ async function buildExcelWorkbook(reportType) {
 
 document.getElementById('accountingBtn').addEventListener('click', () => buildExcelWorkbook('accounting'));
 document.getElementById('managerBtn').addEventListener('click',    () => buildExcelWorkbook('manager'));
+
+// Writes tests/golden/extractions.json: what the model read from each statement
+// this run, keyed by community name. Feeding a validated month back into
+// golden-check is what turns it into the regression baseline, and it costs
+// nothing - the analysis has already happened.
+document.getElementById('extractionsBtn').addEventListener('click', () => {
+  const out = {};
+  let missing = 0;
+  for (const r of globalResults) {
+    if (r && r.__extracted) out[r.communityName || 'Unknown'] = r.__extracted;
+    else missing++;
+  }
+  const n = Object.keys(out).length;
+  if (!n) {
+    showError('No extractions to save. A session restored from an earlier version, or from before this run, will not have them — they are only kept from v54 onwards.');
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1)], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `extractions ${document.getElementById('reportMonth').value || 'run'}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  if (missing) showError(`Saved ${n} extractions. ${missing} community${missing === 1 ? '' : 'ies'} had none — those were restored from an older session.`);
+});
 
 document.getElementById('printBtn').addEventListener('click', () => window.print());
 document.getElementById('resetBtn').addEventListener('click', () => {

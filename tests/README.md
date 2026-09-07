@@ -70,13 +70,24 @@ GitHub Pages site — and the fixtures contain real community financial data.
 HOA packages also carry homeowner names, addresses and email addresses, so no
 client data of any kind belongs in this repo.
 
-To rebuild the fixtures on a machine that has them:
+To rebuild the fixtures from a month you have just run:
 
-1. Pull a month's PDFs from CINC (single publish date — one document per
-   community) and keep them outside the repository.
-2. Run each through the extraction path and save the parsed JSON, keyed by
-   community name, to `tests/golden/extractions.json`.
-3. Verify that month's output is correct, then `node tests/golden-check.js --update`.
+1. Run the month as normal.
+2. Check the output is right — this becomes the definition of correct, so a
+   mistake here is a mistake every later run is measured against.
+3. Press **⬇ Extractions (tests)** on the results screen. It writes what the
+   model read from each statement, keyed by community name, in exactly the shape
+   this file needs. It costs nothing: the analysis has already happened.
+4. Save it as `tests/golden/extractions.json`, outside any commit.
+5. `node tests/golden-check.js` to see what changes against the old snapshot,
+   then `--update` once every change is one you intended.
+
+The extraction is the only record of what the model actually read. Before v54 it
+was discarded as soon as the findings were built, so a month could not be turned
+into a fixture afterwards without paying to analyse every statement again — which
+is why the snapshot lagged the code by several versions. It is now kept on the
+result and saved with the session; if that ever exceeds the browser's storage,
+the session is saved without it rather than not at all.
 
 The snapshot currently in use was built from July 2026 (110 communities) and
 verified two ways: every balance-sheet column was checked against an
