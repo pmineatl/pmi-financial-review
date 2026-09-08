@@ -97,12 +97,27 @@ if (!fs.existsSync(SNAPSHOT)) {
 }
 
 const expected = JSON.parse(fs.readFileSync(SNAPSHOT, 'utf8'));
+
+// Communities are matched on letters and digits only. The same association
+// reaches us with small punctuation differences between months - one gained a
+// trailing comma between July and August - and keying on the exact string made
+// that read as one community leaving and another arriving, burying the real
+// comparison. The app's manager layer normalises for the same reason.
+const key = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const currentByKey = new Map(Object.entries(current).map(([name, rec]) => [key(name), { name, rec }]));
+const matchedKeys = new Set();
 const fields = ['bsOperating', 'bsReserve', 'prepaid', 'ledgerAdjustments', 'status', 'accountingStatus'];
 let changed = 0;
 
 for (const community of Object.keys(expected)) {
-  const was = expected[community], now = snapshotOf(current[community]);
-  if (!now) { console.log(`MISSING  ${community}`); changed++; continue; }
+  const hit = currentByKey.get(key(community));
+  if (hit) matchedKeys.add(key(community));
+  const was = expected[community], record = hit && hit.rec;
+  // Guard before projecting: a community that dropped out of this month has no
+  // record to project, and calling snapshotOf on nothing threw instead of
+  // reporting it. That is exactly the month a community leaves the portfolio.
+  if (!record) { console.log(`MISSING  ${community}`); changed++; continue; }
+  const now = snapshotOf(record);
   const diffs = [];
   for (const f of fields) {
     if (JSON.stringify(was[f]) !== JSON.stringify(now[f])) diffs.push(`  ${f}\n      was: ${was[f]}\n      now: ${now[f]}`);
@@ -113,14 +128,17 @@ for (const community of Object.keys(expected)) {
   const removed = [...wasSet].filter(i => !nowSet.has(i));
   for (const i of removed) diffs.push(`  - ${i}`);
   for (const i of added) diffs.push(`  + ${i}`);
+  // A renamed-but-same community is worth saying out loud rather than passing
+  // over: it is the one case where the snapshot key should be refreshed.
+  if (hit && hit.name !== community) console.log(`RENAMED  ${community}\n      now: ${hit.name}`);
   if (diffs.length) { changed++; console.log(`\n${community}`); diffs.forEach(d => console.log(d)); }
 }
-for (const community of Object.keys(current)) {
-  if (!expected[community]) { console.log(`NEW      ${community}`); changed++; }
+for (const [k, { name }] of currentByKey) {
+  if (!matchedKeys.has(k)) { console.log(`NEW      ${name}`); changed++; }
 }
 
 const total = Object.keys(expected).length;
-console.log(`\n${total - changed}/${total} communities unchanged.`);
+console.log(`\n${Math.max(0, total - changed)}/${total} communities unchanged.`);
 if (changed) {
   console.log(`${changed} changed. Confirm each change is intended, then re-run with --update.`);
   process.exit(1);

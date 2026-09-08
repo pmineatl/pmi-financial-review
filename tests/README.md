@@ -89,7 +89,21 @@ is why the snapshot lagged the code by several versions. It is now kept on the
 result and saved with the session; if that ever exceeds the browser's storage,
 the session is saved without it rather than not at all.
 
-The snapshot currently in use was built from July 2026 (110 communities) and
-verified two ways: every balance-sheet column was checked against an
-independent calculation done directly from the PDF text rather than by the
-model, and 3,991 of 3,992 line items were confirmed against the same source.
+The snapshot currently in use was built from **August 2026** (110 communities,
+1,093 findings). It was verified against that month's finished workbook rather
+than against itself: every balance-sheet, pre-paid and ledger cell the report
+printed was recompared to what the engine builds from the fixture — 429 cells
+and 101 Section A columns, no mismatches — with the cells an exception had
+touched excluded from the comparison.
+
+It replaced a July snapshot that could not exercise two checks at all. July's
+extractions carried a YTD figure on only 5 of 36 special-income rows and had no
+aging report on any community, so `ledgerAdjustment` was "Not provided" 110
+times out of 110. August has a YTD on all 40 special-income rows and an aging
+report on all 110 communities, six of which carry real negative balances. Those
+two rules have real regression coverage for the first time.
+
+Two communities differ between the months and both are expected: one was marked
+inactive in CINC and left out of August, and one is new. A third changed only by
+gaining a trailing comma, which is why communities are matched on letters and
+digits rather than on the exact name.
