@@ -90,11 +90,6 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans', 
 .resume-clear-btn:hover { border-color:var(--red) !important; color:var(--red); }
 .error-box { display: none; background: var(--red-bg); border: 1px solid rgba(200,57,26,0.3); border-radius: var(--radius); padding: 12px 16px; font-size: 13px; color: var(--red); margin-bottom: 16px; }
 .error-box.visible { display: block; }
-@media print {
-  .apikey-bar,.drop-zone,.file-list,.controls-row,.action-bar,.top-stripe { display: none !important; }
-  .results { display: block !important; }
-  body { background: white; }
-}
 </style>
 </head>
 <body>
@@ -103,7 +98,7 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans', 
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v55</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v56</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -232,7 +227,6 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans', 
       <button class="btn-sec btn-excel" id="accountingBtn">⬇ Accounting Report</button>
       <button class="btn-sec btn-excel" id="managerBtn">⬇ Manager Report</button>
       <button class="btn-sec" id="extractionsBtn" title="Save what the model read from each statement, as a regression fixture">⬇ Extractions (tests)</button>
-      <button class="btn-sec" id="printBtn">🖨 Print / Save PDF</button>
       <button class="btn-sec" id="resetBtn">↩ New Review</button>
     </div>
   </div>
@@ -2622,7 +2616,6 @@ document.getElementById('extractionsBtn').addEventListener('click', () => {
   if (missing) showError(`Saved ${n} extractions. ${missing} community${missing === 1 ? '' : 'ies'} had none — those were restored from an older session.`);
 });
 
-document.getElementById('printBtn').addEventListener('click', () => window.print());
 document.getElementById('resetBtn').addEventListener('click', () => {
   files=[]; globalResults=[]; renderFileList();
   runBtn.disabled=true;
