@@ -75,24 +75,6 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans', 
 .stat-dot.red { background: var(--red); }
 .stat-dot.yellow { background: #c8960a; }
 .stat-dot.green { background: var(--green); }
-.table-wrapper { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); margin-bottom: 20px; }
-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-thead tr { background: var(--accent); color: #fff; }
-thead th { font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; padding: 11px 12px; text-align: left; font-weight: 500; white-space: nowrap; }
-tbody tr { border-bottom: 1px solid var(--border); }
-tbody tr:last-child { border-bottom: none; }
-tbody tr:hover { background: var(--surface2); }
-tbody td { padding: 10px 12px; vertical-align: top; line-height: 1.5; }
-tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accent); font-size: 13px; }
-.cell-ok { color: var(--green); font-family: 'IBM Plex Mono', monospace; font-size: 10px; font-weight: 500; }
-.cell-issue { color: var(--red); font-size: 11px; }
-.cell-warn { color: var(--yellow); font-size: 11px; }
-.cell-dim { color: var(--text-muted); font-size: 11px; font-style: italic; }
-.cell-warn-line { display: block; padding: 1px 0; border-bottom: 1px dotted rgba(122,90,16,0.2); }
-.cell-warn-line:last-child { border-bottom: none; }
-.row-critical td:first-child { border-left: 3px solid var(--red); padding-left: 9px; }
-.row-warning td:first-child { border-left: 3px solid #c8960a; padding-left: 9px; }
-.row-ok td:first-child { border-left: 3px solid var(--green); padding-left: 9px; }
 .action-bar { display: flex; gap: 10px; flex-wrap: wrap; }
 .btn-sec { padding: 10px 18px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); font-family: 'IBM Plex Sans', sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; transition: border-color 0.2s; }
 .btn-sec:hover { border-color: var(--accent); background: #eef3f0; }
@@ -121,7 +103,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v54</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v55</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -246,21 +228,6 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
       <div class="header-date" id="resultsMeta"></div>
     </div>
     <div class="stats-bar" id="statsBar"></div>
-    <div class="table-wrapper">
-      <table id="reviewTable">
-        <thead>
-          <tr>
-            <th>Community</th>
-            <th>BS — Operating</th>
-            <th>BS — Reserve</th>
-            <th>Pre-Paid Recon</th>
-            <th>Ledger Adjustments</th>
-            <th>Income Statement Review</th>
-          </tr>
-        </thead>
-        <tbody id="tableBody"></tbody>
-      </table>
-    </div>
     <div class="action-bar">
       <button class="btn-sec btn-excel" id="accountingBtn">⬇ Accounting Report</button>
       <button class="btn-sec btn-excel" id="managerBtn">⬇ Manager Report</button>
@@ -2286,30 +2253,21 @@ function isOK(val) {
   if (Array.isArray(val)) return val.length === 1 && val[0].toString().toUpperCase().trim() === 'OK';
   return val.toString().toUpperCase().trim() === 'OK';
 }
-// Low Cash helpers — detect AI-flagged cash level in bsOperating field
+// Colours one cell in the accounting workbook; the status tiers themselves are
+// graded from finding severities, not from this.
 function isVeryLowCash(val) { return /Very Low Cash/i.test(String(val||'')); }
-function isLowCash(val) {
-  const s = String(val||'');
-  return /\bLow Cash\b/i.test(s) && !/Very Low Cash/i.test(s);
-}
 
 function renderResults(data, monthDisplay) {
   const reviewer = document.getElementById('reviewerName').value.trim();
   document.getElementById('resultsMeta').textContent = `${monthDisplay}${reviewer?' · '+reviewer:''}`;
+  // The per-community detail is in the two workbooks; the screen carries the
+  // count and nothing else. Grading still comes from the findings via
+  // communityStatus, on the same 'screen' scope - every income item counts,
+  // not just Section A.
   let crit=0, warn=0, ok=0;
-  const tbody = document.getElementById('tableBody');
-  tbody.innerHTML = '';
-
   data.forEach(a => {
-    // Graded from the findings, not by reading the cells back - see
-    // communityStatus. The table lists every income item, so it grades on all
-    // of them; Low Cash and ledger adjustments carry their own warning tier.
     const status = communityStatus(a, 'screen');
     if (status === 'CRITICAL') crit++; else if (status === 'WARNING') warn++; else ok++;
-    const tr = document.createElement('tr');
-    tr.className = status === 'CRITICAL' ? 'row-critical' : status === 'WARNING' ? 'row-warning' : 'row-ok';
-    tr.innerHTML = `<td>${esc(a.communityName||'Unknown')}</td><td>${renderCell(a.bsOperating)}</td><td>${renderCell(a.bsReserve)}</td><td>${renderCell(a.prepaid)}</td><td>${renderLedgerCell(a.ledgerAdjustments)}</td><td>${renderISCell(a.incomeStatement)}</td>`;
-    tbody.appendChild(tr);
   });
 
   document.getElementById('statsBar').innerHTML = `
@@ -2324,39 +2282,8 @@ function renderResults(data, monthDisplay) {
   document.getElementById('results').scrollIntoView({behavior:'smooth',block:'start'});
 }
 
-function renderCell(val) {
-  if (isOK(val)) return '<span class="cell-ok">OK</span>';
-  if (String(val||'').toLowerCase().trim() === 'not provided') return `<span class="cell-dim">Not provided</span>`;
-  if (isLowCash(val)) return `<span class="cell-warn">${esc(String(val||''))}</span>`;
-  if (isVeryLowCash(val)) return `<span class="cell-issue" style="font-weight:600;">${esc(String(val||''))}</span>`;
-  return `<span class="cell-issue">${esc(String(val||''))}</span>`;
-}
 function isNotProvided(val) { return String(val || '').toLowerCase().trim() === 'not provided'; }
 
-function renderLedgerCell(val) {
-  if (isOK(val)) return '<span class="cell-ok">OK</span>';
-  if (isNotProvided(val)) return '<span class="cell-dim">Not provided</span>';
-  const rows = Array.isArray(val) ? val : [String(val)];
-  return rows.map(v => `<span class="cell-warn-line cell-warn">${esc(v)}</span>`).join('');
-}
-
-function renderISCell(val) {
-  if (isOK(val)) return '<span class="cell-ok">OK</span>';
-  if (!Array.isArray(val)) return `<span class="cell-warn">${esc(String(val))}</span>`;
-  return val.map(v => {
-    if (v.toString().toUpperCase().trim() === 'OK') return '<span class="cell-ok">OK</span>';
-    // Render **bold** items (Section A special items)
-    const isBold = v.startsWith('**') && v.endsWith('**');
-    const text = isBold ? v.slice(2, -2) : v;
-    const isNegIncome = !isBold && /^Negative income:/i.test(text);
-    const style = isBold
-      ? 'class="cell-warn-line" style="display:block;padding:2px 0;font-weight:600;color:var(--red);"'
-      : isNegIncome
-        ? 'class="cell-warn-line" style="display:block;padding:2px 0;font-weight:600;color:var(--yellow);"'
-        : 'class="cell-warn-line cell-warn"';
-    return `<span ${style}>${esc(text)}</span>`;
-  }).join('');
-}
 function esc(str) { const d=document.createElement('div'); d.appendChild(document.createTextNode(String(str))); return d.innerHTML; }
 function showError(msg) { const b=document.getElementById('errorBox'); b.textContent=msg; b.classList.add('visible'); }
 function hideError() { document.getElementById('errorBox').classList.remove('visible'); }
