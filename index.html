@@ -98,7 +98,7 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans', 
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v56</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v57</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -351,7 +351,7 @@ function addFiles(newFiles) {
     const item = { file: f, status: 'pending', result: null };
     if (session && session.results) {
       const cached = session.results[f.name + '|' + f.size];
-      if (cached) { item.status = 'done'; item.result = cached; restored++; }
+      if (cached) { item.status = 'done'; item.result = cached; item.restored = true; restored++; }
     }
     files.push(item);
   }
@@ -362,7 +362,20 @@ function addFiles(newFiles) {
     document.getElementById('progressArea').style.display = 'block';
   }
   renderFileList();
-  runBtn.disabled = files.filter(f => f.status === 'pending').length === 0;
+  updateRunButton();
+}
+
+function reanalysableFiles() {
+  return files.filter(f => f.restored || f.status === 'error');
+}
+
+function updateRunButton() {
+  const pending = files.filter(f => f.status === 'pending').length;
+  const again = reanalysableFiles().length;
+  runBtn.disabled = pending === 0 && again === 0;
+  runBtn.textContent = (pending === 0 && again > 0)
+    ? `Re-analyze ${again} File${again === 1 ? '' : 's'} →`
+    : 'Analyze Reports →';
 }
 
 function renderFileList() {
@@ -381,7 +394,7 @@ function renderFileList() {
   });
 }
 
-window.removeFile = function(i) { files.splice(i,1); renderFileList(); runBtn.disabled = files.length===0; };
+window.removeFile = function(i) { files.splice(i,1); renderFileList(); updateRunButton(); };
 
 fileInput.addEventListener('change', e => { if (e.target.files.length) addFiles(Array.from(e.target.files)); fileInput.value=''; });
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
@@ -2088,6 +2101,13 @@ const CONCURRENCY = 3; // simultaneous API calls
 
 document.getElementById('runBtn').addEventListener('click', async () => {
   if (!getApiKey()) { showError('Please enter and save your Anthropic API key first.'); return; }
+  if (!files.filter(f => f.status === 'pending').length) {
+    const again = reanalysableFiles();
+    if (!again.length) return;
+    if (!confirm(`Analyze ${again.length} file${again.length === 1 ? '' : 's'} again? They already have results — restored from a saved session, or from a failed attempt — and re-analyzing them calls the API and costs money.`)) return;
+    again.forEach(f => { f.status = 'pending'; f.result = null; delete f.restored; });
+    renderFileList();
+  }
   const pendingFiles = files.filter(f => f.status === 'pending');
   if (!pendingFiles.length) return;
   hideError();
@@ -2156,6 +2176,7 @@ document.getElementById('runBtn').addEventListener('click', async () => {
         // stripped from the report and never displayed.
         item.result = _res;
         item.status = 'done';
+        delete item.restored;
         fileLog.outcome = 'success';
         completedCount++;
         renderFileList(); updateProgressUI();
@@ -2239,7 +2260,7 @@ document.getElementById('runBtn').addEventListener('click', async () => {
   globalResults = results;
   globalMonth = monthDisplay;
   renderResults(reviewedResults(), monthDisplay);
-  runBtn.disabled = false;
+  updateRunButton();
 });
 
 function isOK(val) {
@@ -2618,7 +2639,7 @@ document.getElementById('extractionsBtn').addEventListener('click', () => {
 
 document.getElementById('resetBtn').addEventListener('click', () => {
   files=[]; globalResults=[]; renderFileList();
-  runBtn.disabled=true;
+  updateRunButton();
   document.getElementById('results').classList.remove('visible');
   document.getElementById('progressArea').style.display='none';
   hideError();
